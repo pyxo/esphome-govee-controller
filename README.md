@@ -1,2 +1,2 @@
-# esphome-govee-controller
+# ESPHome Govee Controller
 ESPHome controller for Govee LED lights
