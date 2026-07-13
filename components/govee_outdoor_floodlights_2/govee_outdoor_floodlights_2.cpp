@@ -3,7 +3,7 @@
 namespace esphome {
 namespace govee_outdoor_floodlights_2 {
 
-static const char *const TAG = "govee_outdoor_floodlights_2";
+static const char *const NUMBER_TAG = "govee_outdoor_floodlights_2.number";
 
 void GoveeOutdoorFloodlights2Output::setup() {
   this->pixel_count_ = this->flood_count_ * 3;
@@ -67,6 +67,47 @@ void GoveeOutdoorFloodlights2Output::setup() {
   this->show_();
 }
 
+void GoveeOutdoorFloodlights2Output::loop() {
+  if (!this->transition_active_) {
+    return;
+  }
+
+  const uint32_t now = millis();
+
+  if (now - this->last_frame_ms_ < FRAME_INTERVAL_MS) {
+    return;
+  }
+
+  this->last_frame_ms_ = now;
+
+  if (this->transition_ms_ == 0) {
+    this->current_values_ = this->target_values_;
+    this->apply_values_(this->current_values_);
+    this->transition_active_ = false;
+    return;
+  }
+
+  const uint32_t elapsed = now - this->transition_start_ms_;
+
+  float progress = static_cast<float>(elapsed) / static_cast<float>(this->transition_ms_);
+
+  if (progress >= 1.0f) {
+    progress = 1.0f;
+  }
+
+  this->current_values_ = this->interpolate_values_(
+    this->start_values_,
+    this->target_values_,
+    progress
+  );
+
+  this->apply_values_(this->current_values_);
+
+  if (progress >= 1.0f) {
+    this->transition_active_ = false;
+  }
+}
+
 void GoveeOutdoorFloodlights2Output::dump_config() {
   ESP_LOGCONFIG(TAG, "Govee Outdoor Floodlights 2");
   ESP_LOGCONFIG(TAG, "  Pin: GPIO%u", this->pin_);
@@ -76,6 +117,8 @@ void GoveeOutdoorFloodlights2Output::dump_config() {
   ESP_LOGCONFIG(TAG, "  RGB order: BRG");
   ESP_LOGCONFIG(TAG, "  Cold white: 6500 K / %.1f mireds", COLD_WHITE_MIRED);
   ESP_LOGCONFIG(TAG, "  Warm white: 2700 K / %.1f mireds", WARM_WHITE_MIRED);
+  ESP_LOGCONFIG(TAG, "  Transition time: %u ms", this->transition_ms_);
+  ESP_LOGCONFIG(TAG, "  Transition frame interval: %u ms", FRAME_INTERVAL_MS);
   ESP_LOGCONFIG(TAG, "  RMT resolution: %u Hz", RMT_RESOLUTION_HZ);
   ESP_LOGCONFIG(TAG, "  RMT mem block symbols: %u", RMT_MEM_BLOCK_SYMBOLS);
 }
@@ -120,7 +163,7 @@ void GoveeOutdoorFloodlights2Output::set_pixel_rgb_(uint16_t pixel, uint8_t red,
   const size_t offset = pixel * 3;
 
   // Fixed BRG byte order.
-  // This swaps green and blue compared to the previous GRB mapping.
+  // This is the known-good order for this Govee flood light.
   this->pixel_data_[offset + 0] = blue;
   this->pixel_data_[offset + 1] = red;
   this->pixel_data_[offset + 2] = green;
@@ -131,8 +174,6 @@ void GoveeOutdoorFloodlights2Output::show_() {
     return;
   }
 
-  // Make sure the previous frame has fully completed before sending another.
-  // This helps prevent flashing during color-temperature transitions.
   rmt_tx_wait_all_done(this->rmt_channel_, pdMS_TO_TICKS(50));
 
   rmt_transmit_config_t transmit_config = {};
@@ -153,32 +194,48 @@ void GoveeOutdoorFloodlights2Output::show_() {
 
   rmt_tx_wait_all_done(this->rmt_channel_, pdMS_TO_TICKS(50));
 
-  // WS281x-style reset/latch time.
-  // The Govee flood pixels seem happier if we do not hammer frames back-to-back.
   delayMicroseconds(80);
 }
 
-void GoveeOutdoorFloodlights2Output::write_state(light::LightState *state) {
+GoveeFloodOutputValues GoveeOutdoorFloodlights2Output::interpolate_values_(
+  const GoveeFloodOutputValues &from,
+  const GoveeFloodOutputValues &to,
+  float progress
+) {
+  GoveeFloodOutputValues result;
+
+  result.red = from.red + ((to.red - from.red) * progress);
+  result.green = from.green + ((to.green - from.green) * progress);
+  result.blue = from.blue + ((to.blue - from.blue) * progress);
+  result.cool_white = from.cool_white + ((to.cool_white - from.cool_white) * progress);
+  result.warm_white = from.warm_white + ((to.warm_white - from.warm_white) * progress);
+
+  return result;
+}
+
+GoveeFloodOutputValues GoveeOutdoorFloodlights2Output::values_from_light_state_(light::LightState *state) {
   auto values = state->current_values;
 
   const float master = values.get_state() * values.get_brightness();
   const auto color_mode = values.get_color_mode();
 
-  uint8_t rgb_red = 0;
-  uint8_t rgb_green = 0;
-  uint8_t rgb_blue = 0;
-  uint8_t cool_white = 0;
-  uint8_t warm_white = 0;
+  GoveeFloodOutputValues output;
 
   if (master <= 0.0f) {
-    // Leave everything off.
-  } else if (color_mode == light::ColorMode::RGB) {
+    return output;
+  }
+
+  if (color_mode == light::ColorMode::RGB) {
     const float color_brightness = values.get_color_brightness();
 
-    rgb_red = this->to_u8_(values.get_red() * color_brightness * master);
-    rgb_green = this->to_u8_(values.get_green() * color_brightness * master);
-    rgb_blue = this->to_u8_(values.get_blue() * color_brightness * master);
-  } else if (color_mode == light::ColorMode::COLOR_TEMPERATURE) {
+    output.red = values.get_red() * color_brightness * master;
+    output.green = values.get_green() * color_brightness * master;
+    output.blue = values.get_blue() * color_brightness * master;
+
+    return output;
+  }
+
+  if (color_mode == light::ColorMode::COLOR_TEMPERATURE) {
     float color_temperature = values.get_color_temperature();
 
     if (color_temperature < COLD_WHITE_MIRED) {
@@ -207,9 +264,19 @@ void GoveeOutdoorFloodlights2Output::write_state(light::LightState *state) {
 
     const float cold_ratio = 1.0f - warm_ratio;
 
-    cool_white = this->to_u8_(cold_ratio * master);
-    warm_white = this->to_u8_(warm_ratio * master);
+    output.cool_white = cold_ratio * master;
+    output.warm_white = warm_ratio * master;
   }
+
+  return output;
+}
+
+void GoveeOutdoorFloodlights2Output::apply_values_(const GoveeFloodOutputValues &values) {
+  const uint8_t rgb_red = this->to_u8_(values.red);
+  const uint8_t rgb_green = this->to_u8_(values.green);
+  const uint8_t rgb_blue = this->to_u8_(values.blue);
+  const uint8_t cool_white = this->to_u8_(values.cool_white);
+  const uint8_t warm_white = this->to_u8_(values.warm_white);
 
   this->clear_();
 
@@ -227,6 +294,54 @@ void GoveeOutdoorFloodlights2Output::write_state(light::LightState *state) {
   }
 
   this->show_();
+}
+
+void GoveeOutdoorFloodlights2Output::write_state(light::LightState *state) {
+  this->target_values_ = this->values_from_light_state_(state);
+
+  if (this->transition_ms_ == 0) {
+    this->current_values_ = this->target_values_;
+    this->apply_values_(this->current_values_);
+    this->transition_active_ = false;
+    return;
+  }
+
+  this->start_values_ = this->current_values_;
+  this->transition_start_ms_ = millis();
+  this->last_frame_ms_ = 0;
+  this->transition_active_ = true;
+}
+
+void GoveeOutdoorFloodlights2TransitionNumber::setup() {
+  if (this->light_output_ == nullptr) {
+    ESP_LOGE(NUMBER_TAG, "No Govee flood light output was configured");
+    this->mark_failed();
+    return;
+  }
+
+  this->publish_state(this->light_output_->get_transition_ms());
+}
+
+void GoveeOutdoorFloodlights2TransitionNumber::dump_config() {
+  ESP_LOGCONFIG(NUMBER_TAG, "Govee Outdoor Floodlights 2 Transition Number");
+}
+
+void GoveeOutdoorFloodlights2TransitionNumber::control(float value) {
+  if (this->light_output_ == nullptr) {
+    return;
+  }
+
+  uint16_t transition_ms = static_cast<uint16_t>(value + 0.5f);
+
+  // Snap to 100 ms increments.
+  transition_ms = static_cast<uint16_t>((transition_ms / 100) * 100);
+
+  if (transition_ms > 5000) {
+    transition_ms = 5000;
+  }
+
+  this->light_output_->set_transition_ms(transition_ms);
+  this->publish_state(transition_ms);
 }
 
 }  // namespace govee_outdoor_floodlights_2
