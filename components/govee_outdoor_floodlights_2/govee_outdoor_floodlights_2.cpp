@@ -73,7 +73,7 @@ void GoveeOutdoorFloodlights2Output::dump_config() {
   ESP_LOGCONFIG(TAG, "  Flood count: %u", this->flood_count_);
   ESP_LOGCONFIG(TAG, "  Physical pixels: %u", this->pixel_count_);
   ESP_LOGCONFIG(TAG, "  Layout per flood: RGB, Cool White, Warm White");
-  ESP_LOGCONFIG(TAG, "  RGB order: GRB");
+  ESP_LOGCONFIG(TAG, "  RGB order: BRG");
   ESP_LOGCONFIG(TAG, "  Cold white: 6500 K / %.1f mireds", COLD_WHITE_MIRED);
   ESP_LOGCONFIG(TAG, "  Warm white: 2700 K / %.1f mireds", WARM_WHITE_MIRED);
   ESP_LOGCONFIG(TAG, "  RMT resolution: %u Hz", RMT_RESOLUTION_HZ);
@@ -119,16 +119,21 @@ void GoveeOutdoorFloodlights2Output::set_pixel_rgb_(uint16_t pixel, uint8_t red,
 
   const size_t offset = pixel * 3;
 
-  // Fixed GRB byte order.
-  this->pixel_data_[offset + 0] = green;
+  // Fixed BRG byte order.
+  // This swaps green and blue compared to the previous GRB mapping.
+  this->pixel_data_[offset + 0] = blue;
   this->pixel_data_[offset + 1] = red;
-  this->pixel_data_[offset + 2] = blue;
+  this->pixel_data_[offset + 2] = green;
 }
 
 void GoveeOutdoorFloodlights2Output::show_() {
   if (this->rmt_channel_ == nullptr || this->rmt_encoder_ == nullptr) {
     return;
   }
+
+  // Make sure the previous frame has fully completed before sending another.
+  // This helps prevent flashing during color-temperature transitions.
+  rmt_tx_wait_all_done(this->rmt_channel_, pdMS_TO_TICKS(50));
 
   rmt_transmit_config_t transmit_config = {};
   transmit_config.loop_count = 0;
@@ -146,7 +151,11 @@ void GoveeOutdoorFloodlights2Output::show_() {
     return;
   }
 
-  rmt_tx_wait_all_done(this->rmt_channel_, 100);
+  rmt_tx_wait_all_done(this->rmt_channel_, pdMS_TO_TICKS(50));
+
+  // WS281x-style reset/latch time.
+  // The Govee flood pixels seem happier if we do not hammer frames back-to-back.
+  delayMicroseconds(80);
 }
 
 void GoveeOutdoorFloodlights2Output::write_state(light::LightState *state) {
