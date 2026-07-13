@@ -79,7 +79,9 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
 
   // Component-level transition settings.
   uint16_t transition_ms_{1000};
-  static constexpr uint32_t FRAME_INTERVAL_MS = 33;
+  // The Govee flood white pixels flash if they are updated too quickly
+  // during color temperature transitions. Keep transitions slow and stable.
+  static constexpr uint32_t FRAME_INTERVAL_MS = 100;
 
   bool transition_active_{false};
   uint32_t transition_start_ms_{0};

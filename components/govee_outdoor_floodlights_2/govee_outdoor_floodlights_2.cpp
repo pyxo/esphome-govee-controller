@@ -104,6 +104,8 @@ void GoveeOutdoorFloodlights2Output::loop() {
   this->apply_values_(this->current_values_);
 
   if (progress >= 1.0f) {
+    this->current_values_ = this->target_values_;
+    this->apply_values_(this->current_values_);
     this->transition_active_ = false;
   }
 }
@@ -174,7 +176,18 @@ void GoveeOutdoorFloodlights2Output::show_() {
     return;
   }
 
-  rmt_tx_wait_all_done(this->rmt_channel_, pdMS_TO_TICKS(50));
+  // Do not stack frames. If the previous RMT transmit is not finished,
+  // skip this frame instead of forcing another one.
+  esp_err_t wait_err = rmt_tx_wait_all_done(this->rmt_channel_, 0);
+
+  if (wait_err != ESP_OK && wait_err != ESP_ERR_TIMEOUT) {
+    ESP_LOGW(TAG, "RMT wait failed: %s", esp_err_to_name(wait_err));
+    return;
+  }
+
+  if (wait_err == ESP_ERR_TIMEOUT) {
+    return;
+  }
 
   rmt_transmit_config_t transmit_config = {};
   transmit_config.loop_count = 0;
@@ -192,9 +205,11 @@ void GoveeOutdoorFloodlights2Output::show_() {
     return;
   }
 
-  rmt_tx_wait_all_done(this->rmt_channel_, pdMS_TO_TICKS(50));
+  rmt_tx_wait_all_done(this->rmt_channel_, pdMS_TO_TICKS(20));
 
-  delayMicroseconds(80);
+  // Extra latch/reset gap. This is intentionally longer than WS2812 needs
+  // because the Govee flood whites are sensitive during transitions.
+  delayMicroseconds(300);
 }
 
 GoveeFloodOutputValues GoveeOutdoorFloodlights2Output::interpolate_values_(
