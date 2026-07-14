@@ -312,7 +312,17 @@ void GoveeOutdoorFloodlights2Output::apply_values_(const GoveeFloodOutputValues 
 }
 
 void GoveeOutdoorFloodlights2Output::write_state(light::LightState *state) {
+  const auto color_mode = state->current_values.get_color_mode();
   this->target_values_ = this->values_from_light_state_(state);
+
+  // White/color-temperature mode is known to flash during repeated transition frames.
+  // Apply it immediately instead of crossfading CW and WW pixels.
+  if (color_mode == light::ColorMode::COLOR_TEMPERATURE) {
+    this->current_values_ = this->target_values_;
+    this->apply_values_(this->current_values_);
+    this->transition_active_ = false;
+    return;
+  }
 
   if (this->transition_ms_ == 0) {
     this->current_values_ = this->target_values_;
