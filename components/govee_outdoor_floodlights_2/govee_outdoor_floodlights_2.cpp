@@ -74,7 +74,13 @@ void GoveeOutdoorFloodlights2Output::loop() {
 
   const uint32_t now = millis();
 
-  if (now - this->last_frame_ms_ < FRAME_INTERVAL_MS) {
+  uint32_t frame_interval = RGB_FRAME_INTERVAL_MS;
+
+  if (this->transition_mode_ == GoveeFloodTransitionMode::WHITE_SAFE) {
+    frame_interval = WHITE_FRAME_INTERVAL_MS;
+  }
+
+  if (now - this->last_frame_ms_ < frame_interval) {
     return;
   }
 
@@ -84,6 +90,7 @@ void GoveeOutdoorFloodlights2Output::loop() {
     this->current_values_ = this->target_values_;
     this->apply_values_(this->current_values_);
     this->transition_active_ = false;
+    this->transition_mode_ = GoveeFloodTransitionMode::NONE;
     return;
   }
 
@@ -107,6 +114,7 @@ void GoveeOutdoorFloodlights2Output::loop() {
     this->current_values_ = this->target_values_;
     this->apply_values_(this->current_values_);
     this->transition_active_ = false;
+    this->transition_mode_ = GoveeFloodTransitionMode::NONE;
   }
 }
 
@@ -120,7 +128,8 @@ void GoveeOutdoorFloodlights2Output::dump_config() {
   ESP_LOGCONFIG(TAG, "  Cold white: 6500 K / %.1f mireds", COLD_WHITE_MIRED);
   ESP_LOGCONFIG(TAG, "  Warm white: 2700 K / %.1f mireds", WARM_WHITE_MIRED);
   ESP_LOGCONFIG(TAG, "  Transition time: %u ms", this->transition_ms_);
-  ESP_LOGCONFIG(TAG, "  Transition frame interval: %u ms", FRAME_INTERVAL_MS);
+  ESP_LOGCONFIG(TAG, "  RGB frame interval: %u ms", RGB_FRAME_INTERVAL_MS);
+  ESP_LOGCONFIG(TAG, "  White frame interval: %u ms", WHITE_FRAME_INTERVAL_MS);
   ESP_LOGCONFIG(TAG, "  RMT resolution: %u Hz", RMT_RESOLUTION_HZ);
   ESP_LOGCONFIG(TAG, "  RMT mem block symbols: %u", RMT_MEM_BLOCK_SYMBOLS);
 }
@@ -176,16 +185,14 @@ void GoveeOutdoorFloodlights2Output::show_() {
     return;
   }
 
-  // Do not stack frames. If the previous RMT transmit is not finished,
-  // skip this frame instead of forcing another one.
   esp_err_t wait_err = rmt_tx_wait_all_done(this->rmt_channel_, 0);
 
-  if (wait_err != ESP_OK && wait_err != ESP_ERR_TIMEOUT) {
-    ESP_LOGW(TAG, "RMT wait failed: %s", esp_err_to_name(wait_err));
+  if (wait_err == ESP_ERR_TIMEOUT) {
     return;
   }
 
-  if (wait_err == ESP_ERR_TIMEOUT) {
+  if (wait_err != ESP_OK) {
+    ESP_LOGW(TAG, "RMT wait failed: %s", esp_err_to_name(wait_err));
     return;
   }
 
@@ -207,8 +214,7 @@ void GoveeOutdoorFloodlights2Output::show_() {
 
   rmt_tx_wait_all_done(this->rmt_channel_, pdMS_TO_TICKS(20));
 
-  // Extra latch/reset gap. This is intentionally longer than WS2812 needs
-  // because the Govee flood whites are sensitive during transitions.
+  // Extra latch/reset gap for the Govee pixels.
   delayMicroseconds(300);
 }
 
@@ -224,6 +230,53 @@ GoveeFloodOutputValues GoveeOutdoorFloodlights2Output::interpolate_values_(
   result.blue = from.blue + ((to.blue - from.blue) * progress);
   result.cool_white = from.cool_white + ((to.cool_white - from.cool_white) * progress);
   result.warm_white = from.warm_white + ((to.warm_white - from.warm_white) * progress);
+
+  return result;
+}
+
+float GoveeOutdoorFloodlights2Output::total_white_(const GoveeFloodOutputValues &values) {
+  float total = values.cool_white + values.warm_white;
+
+  if (total < 0.0f) {
+    total = 0.0f;
+  }
+
+  if (total > 1.0f) {
+    total = 1.0f;
+  }
+
+  return total;
+}
+
+GoveeFloodOutputValues GoveeOutdoorFloodlights2Output::remap_current_to_target_white_ratio_(
+  const GoveeFloodOutputValues &current,
+  const GoveeFloodOutputValues &target
+) {
+  GoveeFloodOutputValues result;
+
+  // Preserve RGB from the current output so RGB can fade out if switching
+  // from color mode to white mode.
+  result.red = current.red;
+  result.green = current.green;
+  result.blue = current.blue;
+
+  const float current_white_total = this->total_white_(current);
+  const float target_white_total = this->total_white_(target);
+
+  if (target_white_total <= 0.0f || current_white_total <= 0.0f) {
+    result.cool_white = 0.0f;
+    result.warm_white = 0.0f;
+    return result;
+  }
+
+  // Snap to the target color-temperature ratio immediately, but keep the
+  // current total white brightness. This avoids repeated CW/WW crossmix frames,
+  // which are what made the Govee white pixels flash.
+  const float target_cool_ratio = target.cool_white / target_white_total;
+  const float target_warm_ratio = target.warm_white / target_white_total;
+
+  result.cool_white = current_white_total * target_cool_ratio;
+  result.warm_white = current_white_total * target_warm_ratio;
 
   return result;
 }
@@ -313,25 +366,34 @@ void GoveeOutdoorFloodlights2Output::apply_values_(const GoveeFloodOutputValues 
 
 void GoveeOutdoorFloodlights2Output::write_state(light::LightState *state) {
   const auto color_mode = state->current_values.get_color_mode();
-  this->target_values_ = this->values_from_light_state_(state);
 
-  // White/color-temperature mode is known to flash during repeated transition frames.
-  // Apply it immediately instead of crossfading CW and WW pixels.
-  if (color_mode == light::ColorMode::COLOR_TEMPERATURE) {
-    this->current_values_ = this->target_values_;
-    this->apply_values_(this->current_values_);
-    this->transition_active_ = false;
-    return;
-  }
+  this->target_values_ = this->values_from_light_state_(state);
 
   if (this->transition_ms_ == 0) {
     this->current_values_ = this->target_values_;
     this->apply_values_(this->current_values_);
     this->transition_active_ = false;
+    this->transition_mode_ = GoveeFloodTransitionMode::NONE;
     return;
   }
 
-  this->start_values_ = this->current_values_;
+  if (color_mode == light::ColorMode::COLOR_TEMPERATURE) {
+    // Safe white transition:
+    // - Snap CW/WW ratio to the target color temperature immediately.
+    // - Fade only the total white brightness.
+    // - Also fade RGB down if switching from RGB to white.
+    this->start_values_ = this->remap_current_to_target_white_ratio_(
+      this->current_values_,
+      this->target_values_
+    );
+
+    this->transition_mode_ = GoveeFloodTransitionMode::WHITE_SAFE;
+  } else {
+    // RGB transitions can be smooth and frequent.
+    this->start_values_ = this->current_values_;
+    this->transition_mode_ = GoveeFloodTransitionMode::RGB;
+  }
+
   this->transition_start_ms_ = millis();
   this->last_frame_ms_ = 0;
   this->transition_active_ = true;

@@ -24,6 +24,12 @@ struct GoveeFloodOutputValues {
   float warm_white{0.0f};
 };
 
+enum class GoveeFloodTransitionMode {
+  NONE,
+  RGB,
+  WHITE_SAFE,
+};
+
 class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Component {
  public:
   void setup() override;
@@ -77,13 +83,19 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
   static constexpr uint32_t RMT_RESOLUTION_HZ = 10000000;
   static constexpr uint16_t RMT_MEM_BLOCK_SYMBOLS = 64;
 
-  // Component-level transition settings.
+  // HA slider-controlled transition time.
   uint16_t transition_ms_{1000};
-  // The Govee flood white pixels flash if they are updated too quickly
-  // during color temperature transitions. Keep transitions slow and stable.
-  static constexpr uint32_t FRAME_INTERVAL_MS = 100;
+
+  // RGB can transition smoothly.
+  static constexpr uint32_t RGB_FRAME_INTERVAL_MS = 20;
+
+  // White transitions use a safer slower interval.
+  // We do not crossfade CW and WW ratios; we only fade total white brightness.
+  static constexpr uint32_t WHITE_FRAME_INTERVAL_MS = 50;
 
   bool transition_active_{false};
+  GoveeFloodTransitionMode transition_mode_{GoveeFloodTransitionMode::NONE};
+
   uint32_t transition_start_ms_{0};
   uint32_t last_frame_ms_{0};
 
@@ -98,8 +110,20 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
 
   void set_pixel_rgb_(uint16_t pixel, uint8_t red, uint8_t green, uint8_t blue);
   void apply_values_(const GoveeFloodOutputValues &values);
+
   GoveeFloodOutputValues values_from_light_state_(light::LightState *state);
-  GoveeFloodOutputValues interpolate_values_(const GoveeFloodOutputValues &from, const GoveeFloodOutputValues &to, float progress);
+  GoveeFloodOutputValues interpolate_values_(
+    const GoveeFloodOutputValues &from,
+    const GoveeFloodOutputValues &to,
+    float progress
+  );
+
+  GoveeFloodOutputValues remap_current_to_target_white_ratio_(
+    const GoveeFloodOutputValues &current,
+    const GoveeFloodOutputValues &target
+  );
+
+  float total_white_(const GoveeFloodOutputValues &values);
 };
 
 class GoveeOutdoorFloodlights2TransitionNumber : public number::Number, public Component {
