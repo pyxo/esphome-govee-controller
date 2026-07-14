@@ -571,6 +571,28 @@ void GoveeOutdoorFloodlights2Output::diagnostic_set_white_raw_(uint8_t cool_whit
   this->show_();
 }
 
+void GoveeOutdoorFloodlights2Output::diagnostic_set_warm_channels_raw_(
+  uint8_t red,
+  uint8_t green,
+  uint8_t blue
+) {
+  this->transition_active_ = false;
+  this->transition_mode_ = GoveeFloodTransitionMode::NONE;
+  this->current_values_ = this->zero_values_();
+
+  this->clear_();
+
+  for (uint16_t i = 0; i < this->flood_count_; i++) {
+    const uint16_t base = i * 3;
+
+    this->set_pixel_rgb_(base + 0, 0, 0, 0);
+    this->set_pixel_rgb_(base + 1, 0, 0, 0);
+    this->set_pixel_rgb_(base + 2, red, green, blue);
+  }
+
+  this->show_();
+}
+
 void GoveeOutdoorFloodlights2Output::diagnostic_apply_fade_step_(uint8_t value) {
   switch (this->diagnostic_test_) {
     case GoveeFloodDiagnosticTest::COOL_FADE:
@@ -602,8 +624,30 @@ void GoveeOutdoorFloodlights2Output::diagnostic_apply_fade_step_(uint8_t value) 
       break;
     }
 
+    case GoveeFloodDiagnosticTest::WARM_RED_FADE:
+      this->diagnostic_set_warm_channels_raw_(value, 0, 0);
+      if (value % 25 == 0) {
+        ESP_LOGI(TAG, "Warm red-channel fade value: %u", value);
+      }
+      break;
+
+    case GoveeFloodDiagnosticTest::WARM_GREEN_FADE:
+      this->diagnostic_set_warm_channels_raw_(0, value, 0);
+      if (value % 25 == 0) {
+        ESP_LOGI(TAG, "Warm green-channel fade value: %u", value);
+      }
+      break;
+
+    case GoveeFloodDiagnosticTest::WARM_BLUE_FADE:
+      this->diagnostic_set_warm_channels_raw_(0, 0, value);
+      if (value % 25 == 0) {
+        ESP_LOGI(TAG, "Warm blue-channel fade value: %u", value);
+      }
+      break;
+
     case GoveeFloodDiagnosticTest::NONE:
     case GoveeFloodDiagnosticTest::RATIO_SWEEP:
+    case GoveeFloodDiagnosticTest::WARM_FIXED_RETRANSMIT:
     default:
       break;
   }
@@ -708,6 +752,25 @@ void GoveeOutdoorFloodlights2Output::update_diagnostic_() {
       }
       break;
 
+    case GoveeFloodDiagnosticPhase::FIXED_RETRANSMIT:
+      this->diagnostic_set_white_raw_(0, DIAGNOSTIC_FIXED_VALUE);
+
+      if (this->diagnostic_step_ % 50 == 0) {
+        ESP_LOGI(
+          TAG,
+          "Warm fixed retransmit: value=%u elapsed=%u ms",
+          DIAGNOSTIC_FIXED_VALUE,
+          now - this->diagnostic_phase_start_ms_
+        );
+      }
+
+      this->diagnostic_step_++;
+
+      if (now - this->diagnostic_phase_start_ms_ >= DIAGNOSTIC_FIXED_DURATION_MS) {
+        this->finish_diagnostic_();
+      }
+      break;
+
     case GoveeFloodDiagnosticPhase::NONE:
     case GoveeFloodDiagnosticPhase::HOLD:
     default:
@@ -738,6 +801,22 @@ void GoveeOutdoorFloodlights2Output::finish_diagnostic_() {
 
     case GoveeFloodDiagnosticTest::RATIO_SWEEP:
       ESP_LOGI(TAG, "Finished diagnostic: white ratio sweep at fixed brightness");
+      break;
+
+    case GoveeFloodDiagnosticTest::WARM_RED_FADE:
+      ESP_LOGI(TAG, "Finished diagnostic: warm red-channel fade");
+      break;
+
+    case GoveeFloodDiagnosticTest::WARM_GREEN_FADE:
+      ESP_LOGI(TAG, "Finished diagnostic: warm green-channel fade");
+      break;
+
+    case GoveeFloodDiagnosticTest::WARM_BLUE_FADE:
+      ESP_LOGI(TAG, "Finished diagnostic: warm blue-channel fade");
+      break;
+
+    case GoveeFloodDiagnosticTest::WARM_FIXED_RETRANSMIT:
+      ESP_LOGI(TAG, "Finished diagnostic: warm fixed-value retransmit");
       break;
 
     case GoveeFloodDiagnosticTest::NONE:
@@ -779,6 +858,31 @@ void GoveeOutdoorFloodlights2Output::run_diagnostic_test(GoveeFloodDiagnosticTes
     case GoveeFloodDiagnosticTest::RATIO_SWEEP:
       ESP_LOGI(TAG, "Starting diagnostic: white ratio sweep at fixed brightness");
       this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::RATIO_FORWARD;
+      break;
+
+    case GoveeFloodDiagnosticTest::WARM_RED_FADE:
+      ESP_LOGI(TAG, "Starting diagnostic: warm red-channel fade");
+      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::FADE_UP;
+      break;
+
+    case GoveeFloodDiagnosticTest::WARM_GREEN_FADE:
+      ESP_LOGI(TAG, "Starting diagnostic: warm green-channel fade");
+      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::FADE_UP;
+      break;
+
+    case GoveeFloodDiagnosticTest::WARM_BLUE_FADE:
+      ESP_LOGI(TAG, "Starting diagnostic: warm blue-channel fade");
+      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::FADE_UP;
+      break;
+
+    case GoveeFloodDiagnosticTest::WARM_FIXED_RETRANSMIT:
+      ESP_LOGI(
+        TAG,
+        "Starting diagnostic: warm fixed-value retransmit (%u for %u ms)",
+        DIAGNOSTIC_FIXED_VALUE,
+        DIAGNOSTIC_FIXED_DURATION_MS
+      );
+      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::FIXED_RETRANSMIT;
       break;
 
     case GoveeFloodDiagnosticTest::NONE:

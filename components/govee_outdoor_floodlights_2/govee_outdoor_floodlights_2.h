@@ -47,6 +47,10 @@ enum class GoveeFloodDiagnosticTest {
   WARM_FADE = 2,
   MIXED_FADE = 3,
   RATIO_SWEEP = 4,
+  WARM_RED_FADE = 5,
+  WARM_GREEN_FADE = 6,
+  WARM_BLUE_FADE = 7,
+  WARM_FIXED_RETRANSMIT = 8,
 };
 
 enum class GoveeFloodDiagnosticPhase {
@@ -56,6 +60,7 @@ enum class GoveeFloodDiagnosticPhase {
   FADE_DOWN,
   RATIO_FORWARD,
   RATIO_REVERSE,
+  FIXED_RETRANSMIT,
 };
 
 class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Component {
@@ -129,6 +134,8 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
   static constexpr uint32_t DIAGNOSTIC_FADE_INTERVAL_MS = 20;
   static constexpr uint32_t DIAGNOSTIC_RATIO_INTERVAL_MS = 50;
   static constexpr uint32_t DIAGNOSTIC_HOLD_MS = 500;
+  static constexpr uint32_t DIAGNOSTIC_FIXED_DURATION_MS = 5000;
+  static constexpr uint8_t DIAGNOSTIC_FIXED_VALUE = 128;
 
   bool transition_active_{false};
   GoveeFloodTransitionMode transition_mode_{GoveeFloodTransitionMode::NONE};
@@ -191,6 +198,7 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
   void finish_current_phase_();
 
   void diagnostic_set_white_raw_(uint8_t cool_white, uint8_t warm_white);
+  void diagnostic_set_warm_channels_raw_(uint8_t red, uint8_t green, uint8_t blue);
   void diagnostic_apply_fade_step_(uint8_t value);
   void diagnostic_apply_ratio_step_(uint8_t step);
   void update_diagnostic_();
