@@ -558,7 +558,6 @@ void GoveeOutdoorFloodlights2Output::diagnostic_set_white_raw_(uint8_t cool_whit
 
 void GoveeOutdoorFloodlights2Output::diagnostic_delay_(uint32_t delay_ms) {
   delay(delay_ms);
-  App.feed_wdt();
 }
 
 void GoveeOutdoorFloodlights2Output::diagnostic_cool_white_fade_() {
