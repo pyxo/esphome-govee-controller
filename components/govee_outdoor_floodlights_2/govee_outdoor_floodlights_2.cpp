@@ -76,7 +76,11 @@ void GoveeOutdoorFloodlights2Output::loop() {
 
   uint32_t frame_interval = RGB_FRAME_INTERVAL_MS;
 
-  if (this->transition_mode_ == GoveeFloodTransitionMode::WHITE_SAFE) {
+  if (
+    this->transition_mode_ == GoveeFloodTransitionMode::WHITE ||
+    this->transition_mode_ == GoveeFloodTransitionMode::RGB_TO_WHITE_FADE_WHITE_IN ||
+    this->transition_mode_ == GoveeFloodTransitionMode::WHITE_TO_RGB_FADE_WHITE_OUT
+  ) {
     frame_interval = WHITE_FRAME_INTERVAL_MS;
   }
 
@@ -86,35 +90,44 @@ void GoveeOutdoorFloodlights2Output::loop() {
 
   this->last_frame_ms_ = now;
 
-  if (this->transition_ms_ == 0) {
-    this->current_values_ = this->target_values_;
-    this->apply_values_(this->current_values_);
-    this->transition_active_ = false;
-    this->transition_mode_ = GoveeFloodTransitionMode::NONE;
-    return;
+  if (this->phase_duration_ms_ == 0) {
+    this->phase_duration_ms_ = 1;
   }
 
   const uint32_t elapsed = now - this->transition_start_ms_;
 
-  float progress = static_cast<float>(elapsed) / static_cast<float>(this->transition_ms_);
+  float progress = static_cast<float>(elapsed) / static_cast<float>(this->phase_duration_ms_);
 
   if (progress >= 1.0f) {
     progress = 1.0f;
   }
 
-  this->current_values_ = this->interpolate_values_(
-    this->start_values_,
-    this->target_values_,
-    progress
-  );
+  progress = this->ease_(progress);
+
+  if (
+    this->transition_mode_ == GoveeFloodTransitionMode::WHITE ||
+    this->transition_mode_ == GoveeFloodTransitionMode::RGB_TO_WHITE_FADE_WHITE_IN ||
+    this->transition_mode_ == GoveeFloodTransitionMode::WHITE_TO_RGB_FADE_WHITE_OUT
+  ) {
+    this->current_values_ = this->interpolate_white_values_(
+      this->start_values_,
+      this->target_values_,
+      progress
+    );
+  } else {
+    this->current_values_ = this->interpolate_rgb_values_(
+      this->start_values_,
+      this->target_values_,
+      progress
+    );
+  }
 
   this->apply_values_(this->current_values_);
 
   if (progress >= 1.0f) {
     this->current_values_ = this->target_values_;
     this->apply_values_(this->current_values_);
-    this->transition_active_ = false;
-    this->transition_mode_ = GoveeFloodTransitionMode::NONE;
+    this->finish_current_phase_();
   }
 }
 
@@ -130,6 +143,7 @@ void GoveeOutdoorFloodlights2Output::dump_config() {
   ESP_LOGCONFIG(TAG, "  Transition time: %u ms", this->transition_ms_);
   ESP_LOGCONFIG(TAG, "  RGB frame interval: %u ms", RGB_FRAME_INTERVAL_MS);
   ESP_LOGCONFIG(TAG, "  White frame interval: %u ms", WHITE_FRAME_INTERVAL_MS);
+  ESP_LOGCONFIG(TAG, "  White low cutoff: %u", WHITE_LOW_CUTOFF);
   ESP_LOGCONFIG(TAG, "  RMT resolution: %u Hz", RMT_RESOLUTION_HZ);
   ESP_LOGCONFIG(TAG, "  RMT mem block symbols: %u", RMT_MEM_BLOCK_SYMBOLS);
 }
@@ -158,6 +172,35 @@ uint8_t GoveeOutdoorFloodlights2Output::to_u8_(float value) {
   }
 
   return static_cast<uint8_t>(value * 255.0f + 0.5f);
+}
+
+uint8_t GoveeOutdoorFloodlights2Output::to_white_u8_(float value) {
+  uint8_t out = this->to_u8_(value);
+
+  if (out > 0 && out < WHITE_LOW_CUTOFF) {
+    return 0;
+  }
+
+  return out;
+}
+
+float GoveeOutdoorFloodlights2Output::clamp_(float value, float min_value, float max_value) {
+  if (value < min_value) {
+    return min_value;
+  }
+
+  if (value > max_value) {
+    return max_value;
+  }
+
+  return value;
+}
+
+float GoveeOutdoorFloodlights2Output::ease_(float progress) {
+  progress = this->clamp_(progress, 0.0f, 1.0f);
+
+  // Smoothstep easing: smoother start and stop than a linear fade.
+  return progress * progress * (3.0f - (2.0f * progress));
 }
 
 void GoveeOutdoorFloodlights2Output::clear_() {
@@ -218,7 +261,39 @@ void GoveeOutdoorFloodlights2Output::show_() {
   delayMicroseconds(300);
 }
 
-GoveeFloodOutputValues GoveeOutdoorFloodlights2Output::interpolate_values_(
+GoveeFloodOutputValues GoveeOutdoorFloodlights2Output::zero_values_() {
+  GoveeFloodOutputValues values;
+  return values;
+}
+
+float GoveeOutdoorFloodlights2Output::total_rgb_(const GoveeFloodOutputValues &values) {
+  float total = values.red + values.green + values.blue;
+
+  return this->clamp_(total, 0.0f, 1.0f);
+}
+
+float GoveeOutdoorFloodlights2Output::total_white_(const GoveeFloodOutputValues &values) {
+  float total = values.cool_white + values.warm_white;
+
+  return this->clamp_(total, 0.0f, 1.0f);
+}
+
+GoveeFloodOutputMode GoveeOutdoorFloodlights2Output::output_mode_(const GoveeFloodOutputValues &values) {
+  const float rgb_total = this->total_rgb_(values);
+  const float white_total = this->total_white_(values);
+
+  if (rgb_total <= 0.001f && white_total <= 0.001f) {
+    return GoveeFloodOutputMode::OFF;
+  }
+
+  if (white_total > rgb_total) {
+    return GoveeFloodOutputMode::WHITE;
+  }
+
+  return GoveeFloodOutputMode::RGB;
+}
+
+GoveeFloodOutputValues GoveeOutdoorFloodlights2Output::interpolate_rgb_values_(
   const GoveeFloodOutputValues &from,
   const GoveeFloodOutputValues &to,
   float progress
@@ -228,55 +303,52 @@ GoveeFloodOutputValues GoveeOutdoorFloodlights2Output::interpolate_values_(
   result.red = from.red + ((to.red - from.red) * progress);
   result.green = from.green + ((to.green - from.green) * progress);
   result.blue = from.blue + ((to.blue - from.blue) * progress);
+
+  // RGB transitions intentionally do not drive white unless both endpoints
+  // include white values, which our transition planner avoids.
   result.cool_white = from.cool_white + ((to.cool_white - from.cool_white) * progress);
   result.warm_white = from.warm_white + ((to.warm_white - from.warm_white) * progress);
 
   return result;
 }
 
-float GoveeOutdoorFloodlights2Output::total_white_(const GoveeFloodOutputValues &values) {
-  float total = values.cool_white + values.warm_white;
-
-  if (total < 0.0f) {
-    total = 0.0f;
-  }
-
-  if (total > 1.0f) {
-    total = 1.0f;
-  }
-
-  return total;
-}
-
-GoveeFloodOutputValues GoveeOutdoorFloodlights2Output::remap_current_to_target_white_ratio_(
-  const GoveeFloodOutputValues &current,
-  const GoveeFloodOutputValues &target
+GoveeFloodOutputValues GoveeOutdoorFloodlights2Output::interpolate_white_values_(
+  const GoveeFloodOutputValues &from,
+  const GoveeFloodOutputValues &to,
+  float progress
 ) {
   GoveeFloodOutputValues result;
 
-  // Preserve RGB from the current output so RGB can fade out if switching
-  // from color mode to white mode.
-  result.red = current.red;
-  result.green = current.green;
-  result.blue = current.blue;
+  const float from_total = this->total_white_(from);
+  const float to_total = this->total_white_(to);
+  const float total = from_total + ((to_total - from_total) * progress);
 
-  const float current_white_total = this->total_white_(current);
-  const float target_white_total = this->total_white_(target);
+  float from_cool_ratio = 0.0f;
+  float to_cool_ratio = 0.0f;
 
-  if (target_white_total <= 0.0f || current_white_total <= 0.0f) {
-    result.cool_white = 0.0f;
-    result.warm_white = 0.0f;
-    return result;
+  if (from_total > 0.001f) {
+    from_cool_ratio = from.cool_white / from_total;
+  } else if (to_total > 0.001f) {
+    from_cool_ratio = to.cool_white / to_total;
   }
 
-  // Snap to the target color-temperature ratio immediately, but keep the
-  // current total white brightness. This avoids repeated CW/WW crossmix frames,
-  // which are what made the Govee white pixels flash.
-  const float target_cool_ratio = target.cool_white / target_white_total;
-  const float target_warm_ratio = target.warm_white / target_white_total;
+  if (to_total > 0.001f) {
+    to_cool_ratio = to.cool_white / to_total;
+  } else if (from_total > 0.001f) {
+    to_cool_ratio = from.cool_white / from_total;
+  }
 
-  result.cool_white = current_white_total * target_cool_ratio;
-  result.warm_white = current_white_total * target_warm_ratio;
+  from_cool_ratio = this->clamp_(from_cool_ratio, 0.0f, 1.0f);
+  to_cool_ratio = this->clamp_(to_cool_ratio, 0.0f, 1.0f);
+
+  const float cool_ratio = from_cool_ratio + ((to_cool_ratio - from_cool_ratio) * progress);
+  const float warm_ratio = 1.0f - cool_ratio;
+
+  result.red = 0.0f;
+  result.green = 0.0f;
+  result.blue = 0.0f;
+  result.cool_white = total * cool_ratio;
+  result.warm_white = total * warm_ratio;
 
   return result;
 }
@@ -322,13 +394,7 @@ GoveeFloodOutputValues GoveeOutdoorFloodlights2Output::values_from_light_state_(
       warm_ratio = (color_temperature - COLD_WHITE_MIRED) / range;
     }
 
-    if (warm_ratio < 0.0f) {
-      warm_ratio = 0.0f;
-    }
-
-    if (warm_ratio > 1.0f) {
-      warm_ratio = 1.0f;
-    }
+    warm_ratio = this->clamp_(warm_ratio, 0.0f, 1.0f);
 
     const float cold_ratio = 1.0f - warm_ratio;
 
@@ -343,8 +409,8 @@ void GoveeOutdoorFloodlights2Output::apply_values_(const GoveeFloodOutputValues 
   const uint8_t rgb_red = this->to_u8_(values.red);
   const uint8_t rgb_green = this->to_u8_(values.green);
   const uint8_t rgb_blue = this->to_u8_(values.blue);
-  const uint8_t cool_white = this->to_u8_(values.cool_white);
-  const uint8_t warm_white = this->to_u8_(values.warm_white);
+  const uint8_t cool_white = this->to_white_u8_(values.cool_white);
+  const uint8_t warm_white = this->to_white_u8_(values.warm_white);
 
   this->clear_();
 
@@ -364,39 +430,120 @@ void GoveeOutdoorFloodlights2Output::apply_values_(const GoveeFloodOutputValues 
   this->show_();
 }
 
-void GoveeOutdoorFloodlights2Output::write_state(light::LightState *state) {
-  const auto color_mode = state->current_values.get_color_mode();
+void GoveeOutdoorFloodlights2Output::begin_phase_(
+  GoveeFloodTransitionMode mode,
+  const GoveeFloodOutputValues &from,
+  const GoveeFloodOutputValues &to,
+  uint32_t duration_ms
+) {
+  if (duration_ms < 1) {
+    duration_ms = 1;
+  }
 
-  this->target_values_ = this->values_from_light_state_(state);
+  this->transition_mode_ = mode;
+  this->start_values_ = from;
+  this->target_values_ = to;
+  this->phase_duration_ms_ = duration_ms;
+  this->transition_start_ms_ = millis();
+  this->last_frame_ms_ = 0;
+  this->transition_active_ = true;
+}
+
+void GoveeOutdoorFloodlights2Output::finish_current_phase_() {
+  const auto finished_mode = this->transition_mode_;
+
+  if (finished_mode == GoveeFloodTransitionMode::RGB_TO_WHITE_FADE_RGB_OUT) {
+    this->begin_phase_(
+      GoveeFloodTransitionMode::RGB_TO_WHITE_FADE_WHITE_IN,
+      this->zero_values_(),
+      this->pending_values_,
+      this->next_phase_duration_ms_
+    );
+    return;
+  }
+
+  if (finished_mode == GoveeFloodTransitionMode::WHITE_TO_RGB_FADE_WHITE_OUT) {
+    this->begin_phase_(
+      GoveeFloodTransitionMode::WHITE_TO_RGB_FADE_RGB_IN,
+      this->zero_values_(),
+      this->pending_values_,
+      this->next_phase_duration_ms_
+    );
+    return;
+  }
+
+  this->transition_active_ = false;
+  this->transition_mode_ = GoveeFloodTransitionMode::NONE;
+}
+
+void GoveeOutdoorFloodlights2Output::write_state(light::LightState *state) {
+  this->pending_values_ = this->values_from_light_state_(state);
 
   if (this->transition_ms_ == 0) {
-    this->current_values_ = this->target_values_;
+    this->current_values_ = this->pending_values_;
     this->apply_values_(this->current_values_);
     this->transition_active_ = false;
     this->transition_mode_ = GoveeFloodTransitionMode::NONE;
     return;
   }
 
-  if (color_mode == light::ColorMode::COLOR_TEMPERATURE) {
-    // Safe white transition:
-    // - Snap CW/WW ratio to the target color temperature immediately.
-    // - Fade only the total white brightness.
-    // - Also fade RGB down if switching from RGB to white.
-    this->start_values_ = this->remap_current_to_target_white_ratio_(
-      this->current_values_,
-      this->target_values_
-    );
+  const auto current_mode = this->output_mode_(this->current_values_);
+  const auto target_mode = this->output_mode_(this->pending_values_);
 
-    this->transition_mode_ = GoveeFloodTransitionMode::WHITE_SAFE;
-  } else {
-    // RGB transitions can be smooth and frequent.
-    this->start_values_ = this->current_values_;
-    this->transition_mode_ = GoveeFloodTransitionMode::RGB;
+  const uint32_t first_phase_duration = this->transition_ms_ / 2;
+  uint32_t second_phase_duration = this->transition_ms_ - first_phase_duration;
+
+  if (second_phase_duration < 1) {
+    second_phase_duration = 1;
   }
 
-  this->transition_start_ms_ = millis();
-  this->last_frame_ms_ = 0;
-  this->transition_active_ = true;
+  this->next_phase_duration_ms_ = second_phase_duration;
+
+  if (current_mode == GoveeFloodOutputMode::RGB && target_mode == GoveeFloodOutputMode::WHITE) {
+    // RGB -> White:
+    // Phase 1: fade RGB down to off.
+    // Phase 2: fade white up from off.
+    this->begin_phase_(
+      GoveeFloodTransitionMode::RGB_TO_WHITE_FADE_RGB_OUT,
+      this->current_values_,
+      this->zero_values_(),
+      first_phase_duration
+    );
+    return;
+  }
+
+  if (current_mode == GoveeFloodOutputMode::WHITE && target_mode == GoveeFloodOutputMode::RGB) {
+    // White -> RGB:
+    // Phase 1: fade white down to off.
+    // Phase 2: fade RGB up from off.
+    this->begin_phase_(
+      GoveeFloodTransitionMode::WHITE_TO_RGB_FADE_WHITE_OUT,
+      this->current_values_,
+      this->zero_values_(),
+      first_phase_duration
+    );
+    return;
+  }
+
+  if (current_mode == GoveeFloodOutputMode::WHITE || target_mode == GoveeFloodOutputMode::WHITE) {
+    // White -> White, Off -> White, or White -> Off.
+    // This uses total white brightness + cool/warm ratio interpolation.
+    this->begin_phase_(
+      GoveeFloodTransitionMode::WHITE,
+      this->current_values_,
+      this->pending_values_,
+      this->transition_ms_
+    );
+    return;
+  }
+
+  // RGB -> RGB, Off -> RGB, or RGB -> Off.
+  this->begin_phase_(
+    GoveeFloodTransitionMode::RGB,
+    this->current_values_,
+    this->pending_values_,
+    this->transition_ms_
+  );
 }
 
 void GoveeOutdoorFloodlights2TransitionNumber::setup() {
