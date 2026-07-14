@@ -47,10 +47,10 @@ enum class GoveeFloodDiagnosticTest {
   WARM_FADE = 2,
   MIXED_FADE = 3,
   RATIO_SWEEP = 4,
-  WARM_RED_FADE = 5,
-  WARM_GREEN_FADE = 6,
-  WARM_BLUE_FADE = 7,
-  WARM_FIXED_RETRANSMIT = 8,
+  COOL_RED_FADE = 5,
+  COOL_GREEN_FADE = 6,
+  COOL_BLUE_FADE = 7,
+  COOL_FIXED_RETRANSMIT = 8,
 };
 
 enum class GoveeFloodDiagnosticPhase {
@@ -198,6 +198,7 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
   void finish_current_phase_();
 
   void diagnostic_set_white_raw_(uint8_t cool_white, uint8_t warm_white);
+  void diagnostic_set_cool_channels_raw_(uint8_t red, uint8_t green, uint8_t blue);
   void diagnostic_set_warm_channels_raw_(uint8_t red, uint8_t green, uint8_t blue);
   void diagnostic_apply_fade_step_(uint8_t value);
   void diagnostic_apply_ratio_step_(uint8_t step);

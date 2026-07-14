@@ -19,10 +19,10 @@ TEST_OPTIONS = {
   "warm_fade": 2,
   "mixed_fade": 3,
   "ratio_sweep": 4,
-  "warm_red_fade": 5,
-  "warm_green_fade": 6,
-  "warm_blue_fade": 7,
-  "warm_fixed_retransmit": 8,
+  "cool_red_fade": 5,
+  "cool_green_fade": 6,
+  "cool_blue_fade": 7,
+  "cool_fixed_retransmit": 8,
 }
 
 GoveeOutdoorFloodlights2DiagnosticButton = govee_outdoor_floodlights_2_ns.class_(
