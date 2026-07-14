@@ -406,11 +406,26 @@ void GoveeOutdoorFloodlights2TransitionNumber::setup() {
     return;
   }
 
-  this->publish_state(this->light_output_->get_transition_ms());
+  uint32_t initial_value = this->initial_value_ms_;
+
+  if (initial_value < this->min_value_ms_) {
+    initial_value = this->min_value_ms_;
+  }
+
+  if (initial_value > this->max_value_ms_) {
+    initial_value = this->max_value_ms_;
+  }
+
+  this->light_output_->set_transition_ms(initial_value);
+  this->publish_state(initial_value);
 }
 
 void GoveeOutdoorFloodlights2TransitionNumber::dump_config() {
   ESP_LOGCONFIG(NUMBER_TAG, "Govee Outdoor Floodlights 2 Transition Number");
+  ESP_LOGCONFIG(NUMBER_TAG, "  Min value: %u ms", this->min_value_ms_);
+  ESP_LOGCONFIG(NUMBER_TAG, "  Max value: %u ms", this->max_value_ms_);
+  ESP_LOGCONFIG(NUMBER_TAG, "  Step: %u ms", this->step_ms_);
+  ESP_LOGCONFIG(NUMBER_TAG, "  Initial value: %u ms", this->initial_value_ms_);
 }
 
 void GoveeOutdoorFloodlights2TransitionNumber::control(float value) {
@@ -418,13 +433,20 @@ void GoveeOutdoorFloodlights2TransitionNumber::control(float value) {
     return;
   }
 
-  uint16_t transition_ms = static_cast<uint16_t>(value + 0.5f);
+  uint32_t transition_ms = static_cast<uint32_t>(value + 0.5f);
 
-  // Snap to 100 ms increments.
-  transition_ms = static_cast<uint16_t>((transition_ms / 100) * 100);
+  if (transition_ms < this->min_value_ms_) {
+    transition_ms = this->min_value_ms_;
+  }
 
-  if (transition_ms > 5000) {
-    transition_ms = 5000;
+  if (transition_ms > this->max_value_ms_) {
+    transition_ms = this->max_value_ms_;
+  }
+
+  if (this->step_ms_ > 1) {
+    transition_ms = static_cast<uint32_t>(
+      (transition_ms / this->step_ms_) * this->step_ms_
+    );
   }
 
   this->light_output_->set_transition_ms(transition_ms);

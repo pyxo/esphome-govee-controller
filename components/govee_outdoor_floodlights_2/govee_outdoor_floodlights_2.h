@@ -47,16 +47,12 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
     this->flood_count_ = flood_count;
   }
 
-  void set_transition_ms(uint16_t transition_ms) {
-    if (transition_ms > 5000) {
-      transition_ms = 5000;
-    }
-
+  void set_transition_ms(uint32_t transition_ms) {
     this->transition_ms_ = transition_ms;
     ESP_LOGD(TAG, "Transition time set to %u ms", this->transition_ms_);
   }
 
-  uint16_t get_transition_ms() const {
+  uint32_t get_transition_ms() const {
     return this->transition_ms_;
   }
 
@@ -84,7 +80,7 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
   static constexpr uint16_t RMT_MEM_BLOCK_SYMBOLS = 64;
 
   // HA slider-controlled transition time.
-  uint16_t transition_ms_{1000};
+  uint32_t transition_ms_{1000};
 
   // RGB can transition smoothly.
   static constexpr uint32_t RGB_FRAME_INTERVAL_MS = 20;
@@ -135,10 +131,35 @@ class GoveeOutdoorFloodlights2TransitionNumber : public number::Number, public C
     this->light_output_ = light_output;
   }
 
+  void set_min_value_ms(uint32_t min_value_ms) {
+    this->min_value_ms_ = min_value_ms;
+  }
+
+  void set_max_value_ms(uint32_t max_value_ms) {
+    this->max_value_ms_ = max_value_ms;
+  }
+
+  void set_step_ms(uint32_t step_ms) {
+    if (step_ms < 1) {
+      step_ms = 1;
+    }
+
+    this->step_ms_ = step_ms;
+  }
+
+  void set_initial_value_ms(uint32_t initial_value_ms) {
+    this->initial_value_ms_ = initial_value_ms;
+  }
+
  protected:
   void control(float value) override;
 
   GoveeOutdoorFloodlights2Output *light_output_{nullptr};
+
+  uint32_t min_value_ms_{0};
+  uint32_t max_value_ms_{5000};
+  uint32_t step_ms_{100};
+  uint32_t initial_value_ms_{1000};
 };
 
 }  // namespace govee_outdoor_floodlights_2
