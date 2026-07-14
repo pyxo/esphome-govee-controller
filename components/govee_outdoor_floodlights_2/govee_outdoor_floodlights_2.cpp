@@ -4,7 +4,6 @@ namespace esphome {
 namespace govee_outdoor_floodlights_2 {
 
 static const char *const NUMBER_TAG = "govee_outdoor_floodlights_2.number";
-static const char *const BUTTON_TAG = "govee_outdoor_floodlights_2.button";
 
 void GoveeOutdoorFloodlights2Output::setup() {
   this->pixel_count_ = this->flood_count_ * 3;
@@ -69,11 +68,6 @@ void GoveeOutdoorFloodlights2Output::setup() {
 }
 
 void GoveeOutdoorFloodlights2Output::loop() {
-  if (this->diagnostic_phase_ != GoveeFloodDiagnosticPhase::NONE) {
-    this->update_diagnostic_();
-    return;
-  }
-
   if (!this->transition_active_) {
     return;
   }
@@ -144,6 +138,7 @@ void GoveeOutdoorFloodlights2Output::dump_config() {
   ESP_LOGCONFIG(TAG, "  Physical pixels: %u", this->pixel_count_);
   ESP_LOGCONFIG(TAG, "  Layout per flood: RGB, Cool White, Warm White");
   ESP_LOGCONFIG(TAG, "  RGB order: BRG");
+  ESP_LOGCONFIG(TAG, "  White pixel control: red channel only");
   ESP_LOGCONFIG(TAG, "  Cold white: 6500 K / %.1f mireds", COLD_WHITE_MIRED);
   ESP_LOGCONFIG(TAG, "  Warm white: 2700 K / %.1f mireds", WARM_WHITE_MIRED);
   ESP_LOGCONFIG(TAG, "  Transition time: %u ms", this->transition_ms_);
@@ -424,10 +419,12 @@ void GoveeOutdoorFloodlights2Output::apply_values_(const GoveeFloodOutputValues 
     this->set_pixel_rgb_(base + 0, rgb_red, rgb_green, rgb_blue);
 
     // Physical pixel 1 in each flood: cool white.
-    this->set_pixel_rgb_(base + 1, cool_white, cool_white, cool_white);
+    // Red-only is the verified stable dimming channel for this white pixel.
+    this->set_pixel_rgb_(base + 1, cool_white, 0, 0);
 
     // Physical pixel 2 in each flood: warm white.
-    this->set_pixel_rgb_(base + 2, warm_white, warm_white, warm_white);
+    // Red-only is the verified stable dimming channel for this white pixel.
+    this->set_pixel_rgb_(base + 2, warm_white, 0, 0);
   }
 
   this->show_();
@@ -480,12 +477,6 @@ void GoveeOutdoorFloodlights2Output::finish_current_phase_() {
 }
 
 void GoveeOutdoorFloodlights2Output::write_state(light::LightState *state) {
-  if (this->diagnostic_phase_ != GoveeFloodDiagnosticPhase::NONE) {
-    ESP_LOGI(TAG, "Diagnostic cancelled by light command");
-    this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::NONE;
-    this->diagnostic_test_ = GoveeFloodDiagnosticTest::NONE;
-  }
-
   this->pending_values_ = this->values_from_light_state_(state);
 
   if (this->transition_ms_ == 0) {
@@ -546,379 +537,6 @@ void GoveeOutdoorFloodlights2Output::write_state(light::LightState *state) {
   );
 }
 
-void GoveeOutdoorFloodlights2Output::diagnostic_set_white_raw_(uint8_t cool_white, uint8_t warm_white) {
-  this->transition_active_ = false;
-  this->transition_mode_ = GoveeFloodTransitionMode::NONE;
-
-  this->current_values_ = this->zero_values_();
-  this->current_values_.cool_white = static_cast<float>(cool_white) / 255.0f;
-  this->current_values_.warm_white = static_cast<float>(warm_white) / 255.0f;
-
-  this->clear_();
-
-  for (uint16_t i = 0; i < this->flood_count_; i++) {
-    const uint16_t base = i * 3;
-
-    // RGB pixel off.
-    this->set_pixel_rgb_(base + 0, 0, 0, 0);
-
-    // White pixels use exact raw values.
-    // This bypasses the normal white low cutoff so we can test low-level behavior.
-    this->set_pixel_rgb_(base + 1, cool_white, cool_white, cool_white);
-    this->set_pixel_rgb_(base + 2, warm_white, warm_white, warm_white);
-  }
-
-  this->show_();
-}
-
-void GoveeOutdoorFloodlights2Output::diagnostic_set_cool_channels_raw_(
-  uint8_t red,
-  uint8_t green,
-  uint8_t blue
-) {
-  this->transition_active_ = false;
-  this->transition_mode_ = GoveeFloodTransitionMode::NONE;
-  this->current_values_ = this->zero_values_();
-
-  this->clear_();
-
-  for (uint16_t i = 0; i < this->flood_count_; i++) {
-    const uint16_t base = i * 3;
-
-    this->set_pixel_rgb_(base + 0, 0, 0, 0);
-    this->set_pixel_rgb_(base + 1, red, green, blue);
-    this->set_pixel_rgb_(base + 2, 0, 0, 0);
-  }
-
-  this->show_();
-}
-
-void GoveeOutdoorFloodlights2Output::diagnostic_set_warm_channels_raw_(
-  uint8_t red,
-  uint8_t green,
-  uint8_t blue
-) {
-  this->transition_active_ = false;
-  this->transition_mode_ = GoveeFloodTransitionMode::NONE;
-  this->current_values_ = this->zero_values_();
-
-  this->clear_();
-
-  for (uint16_t i = 0; i < this->flood_count_; i++) {
-    const uint16_t base = i * 3;
-
-    this->set_pixel_rgb_(base + 0, 0, 0, 0);
-    this->set_pixel_rgb_(base + 1, 0, 0, 0);
-    this->set_pixel_rgb_(base + 2, red, green, blue);
-  }
-
-  this->show_();
-}
-
-void GoveeOutdoorFloodlights2Output::diagnostic_apply_fade_step_(uint8_t value) {
-  switch (this->diagnostic_test_) {
-    case GoveeFloodDiagnosticTest::COOL_FADE:
-      this->diagnostic_set_white_raw_(value, 0);
-      if (value % 25 == 0) {
-        ESP_LOGI(TAG, "Cool white fade value: %u", value);
-      }
-      break;
-
-    case GoveeFloodDiagnosticTest::WARM_FADE:
-      // The warm pixel fades cleanly when only its logical red channel is used.
-      this->diagnostic_set_warm_channels_raw_(value, 0, 0);
-      if (value % 25 == 0) {
-        ESP_LOGI(TAG, "Warm white red-only fade value: %u", value);
-      }
-      break;
-
-    case GoveeFloodDiagnosticTest::MIXED_FADE: {
-      // Approximate 188.5 mireds using the 153-371 mired range.
-      static constexpr float COOL_RATIO = 0.837f;
-      static constexpr float WARM_RATIO = 0.163f;
-
-      const uint8_t cool = static_cast<uint8_t>((value * COOL_RATIO) + 0.5f);
-      const uint8_t warm = static_cast<uint8_t>((value * WARM_RATIO) + 0.5f);
-
-      this->diagnostic_set_white_raw_(cool, warm);
-      if (value % 25 == 0) {
-        ESP_LOGI(TAG, "Mixed white fade value: total=%u cool=%u warm=%u", value, cool, warm);
-      }
-      break;
-    }
-
-    case GoveeFloodDiagnosticTest::COOL_RED_FADE:
-      this->diagnostic_set_cool_channels_raw_(value, 0, 0);
-      if (value % 25 == 0) {
-        ESP_LOGI(TAG, "Cool red-channel fade value: %u", value);
-      }
-      break;
-
-    case GoveeFloodDiagnosticTest::COOL_GREEN_FADE:
-      this->diagnostic_set_cool_channels_raw_(0, value, 0);
-      if (value % 25 == 0) {
-        ESP_LOGI(TAG, "Cool green-channel fade value: %u", value);
-      }
-      break;
-
-    case GoveeFloodDiagnosticTest::COOL_BLUE_FADE:
-      this->diagnostic_set_cool_channels_raw_(0, 0, value);
-      if (value % 25 == 0) {
-        ESP_LOGI(TAG, "Cool blue-channel fade value: %u", value);
-      }
-      break;
-
-    case GoveeFloodDiagnosticTest::NONE:
-    case GoveeFloodDiagnosticTest::RATIO_SWEEP:
-    case GoveeFloodDiagnosticTest::COOL_FIXED_RETRANSMIT:
-    default:
-      break;
-  }
-}
-
-void GoveeOutdoorFloodlights2Output::diagnostic_apply_ratio_step_(uint8_t step) {
-  static constexpr uint8_t TOTAL = 160;
-
-  if (step > 100) {
-    step = 100;
-  }
-
-  const float warm_ratio = static_cast<float>(step) / 100.0f;
-  const float cool_ratio = 1.0f - warm_ratio;
-
-  const uint8_t cool = static_cast<uint8_t>((TOTAL * cool_ratio) + 0.5f);
-  const uint8_t warm = static_cast<uint8_t>((TOTAL * warm_ratio) + 0.5f);
-
-  this->diagnostic_set_white_raw_(cool, warm);
-  if (step % 10 == 0) {
-    ESP_LOGI(TAG, "Ratio sweep: step=%u cool=%u warm=%u", step, cool, warm);
-  }
-}
-
-void GoveeOutdoorFloodlights2Output::update_diagnostic_() {
-  const uint32_t now = millis();
-
-  if (this->diagnostic_phase_ == GoveeFloodDiagnosticPhase::HOLD) {
-    if (now - this->diagnostic_phase_start_ms_ < DIAGNOSTIC_HOLD_MS) {
-      return;
-    }
-
-    if (this->diagnostic_test_ == GoveeFloodDiagnosticTest::RATIO_SWEEP) {
-      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::RATIO_REVERSE;
-      this->diagnostic_step_ = 100;
-    } else {
-      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::FADE_DOWN;
-      this->diagnostic_step_ = 255;
-    }
-
-    this->diagnostic_last_frame_ms_ = 0;
-    return;
-  }
-
-  uint32_t frame_interval = DIAGNOSTIC_FADE_INTERVAL_MS;
-  if (
-    this->diagnostic_phase_ == GoveeFloodDiagnosticPhase::RATIO_FORWARD ||
-    this->diagnostic_phase_ == GoveeFloodDiagnosticPhase::RATIO_REVERSE
-  ) {
-    frame_interval = DIAGNOSTIC_RATIO_INTERVAL_MS;
-  }
-
-  if (
-    this->diagnostic_last_frame_ms_ != 0 &&
-    now - this->diagnostic_last_frame_ms_ < frame_interval
-  ) {
-    return;
-  }
-
-  this->diagnostic_last_frame_ms_ = now;
-
-  switch (this->diagnostic_phase_) {
-    case GoveeFloodDiagnosticPhase::FADE_UP:
-      this->diagnostic_apply_fade_step_(static_cast<uint8_t>(this->diagnostic_step_));
-
-      if (this->diagnostic_step_ >= 255) {
-        this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::HOLD;
-        this->diagnostic_phase_start_ms_ = now;
-      } else {
-        this->diagnostic_step_++;
-      }
-      break;
-
-    case GoveeFloodDiagnosticPhase::FADE_DOWN:
-      this->diagnostic_apply_fade_step_(static_cast<uint8_t>(this->diagnostic_step_));
-
-      if (this->diagnostic_step_ == 0) {
-        this->finish_diagnostic_();
-      } else {
-        this->diagnostic_step_--;
-      }
-      break;
-
-    case GoveeFloodDiagnosticPhase::RATIO_FORWARD:
-      this->diagnostic_apply_ratio_step_(static_cast<uint8_t>(this->diagnostic_step_));
-
-      if (this->diagnostic_step_ >= 100) {
-        this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::HOLD;
-        this->diagnostic_phase_start_ms_ = now;
-      } else {
-        this->diagnostic_step_++;
-      }
-      break;
-
-    case GoveeFloodDiagnosticPhase::RATIO_REVERSE:
-      this->diagnostic_apply_ratio_step_(static_cast<uint8_t>(this->diagnostic_step_));
-
-      if (this->diagnostic_step_ == 0) {
-        this->finish_diagnostic_();
-      } else {
-        this->diagnostic_step_--;
-      }
-      break;
-
-    case GoveeFloodDiagnosticPhase::FIXED_RETRANSMIT:
-      this->diagnostic_set_cool_channels_raw_(
-        DIAGNOSTIC_FIXED_VALUE,
-        DIAGNOSTIC_FIXED_VALUE,
-        DIAGNOSTIC_FIXED_VALUE
-      );
-
-      if (this->diagnostic_step_ % 50 == 0) {
-        ESP_LOGI(
-          TAG,
-          "Cool fixed retransmit: value=%u elapsed=%u ms",
-          DIAGNOSTIC_FIXED_VALUE,
-          now - this->diagnostic_phase_start_ms_
-        );
-      }
-
-      this->diagnostic_step_++;
-
-      if (now - this->diagnostic_phase_start_ms_ >= DIAGNOSTIC_FIXED_DURATION_MS) {
-        this->finish_diagnostic_();
-      }
-      break;
-
-    case GoveeFloodDiagnosticPhase::NONE:
-    case GoveeFloodDiagnosticPhase::HOLD:
-    default:
-      break;
-  }
-}
-
-void GoveeOutdoorFloodlights2Output::finish_diagnostic_() {
-  const auto finished_test = this->diagnostic_test_;
-
-  this->diagnostic_set_white_raw_(0, 0);
-  this->diagnostic_test_ = GoveeFloodDiagnosticTest::NONE;
-  this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::NONE;
-  this->diagnostic_step_ = 0;
-
-  switch (finished_test) {
-    case GoveeFloodDiagnosticTest::COOL_FADE:
-      ESP_LOGI(TAG, "Finished diagnostic: cool white only fade");
-      break;
-
-    case GoveeFloodDiagnosticTest::WARM_FADE:
-      ESP_LOGI(TAG, "Finished diagnostic: warm white only fade");
-      break;
-
-    case GoveeFloodDiagnosticTest::MIXED_FADE:
-      ESP_LOGI(TAG, "Finished diagnostic: mixed white fade");
-      break;
-
-    case GoveeFloodDiagnosticTest::RATIO_SWEEP:
-      ESP_LOGI(TAG, "Finished diagnostic: white ratio sweep at fixed brightness");
-      break;
-
-    case GoveeFloodDiagnosticTest::COOL_RED_FADE:
-      ESP_LOGI(TAG, "Finished diagnostic: cool red-channel fade");
-      break;
-
-    case GoveeFloodDiagnosticTest::COOL_GREEN_FADE:
-      ESP_LOGI(TAG, "Finished diagnostic: cool green-channel fade");
-      break;
-
-    case GoveeFloodDiagnosticTest::COOL_BLUE_FADE:
-      ESP_LOGI(TAG, "Finished diagnostic: cool blue-channel fade");
-      break;
-
-    case GoveeFloodDiagnosticTest::COOL_FIXED_RETRANSMIT:
-      ESP_LOGI(TAG, "Finished diagnostic: cool fixed-value retransmit");
-      break;
-
-    case GoveeFloodDiagnosticTest::NONE:
-    default:
-      break;
-  }
-}
-
-void GoveeOutdoorFloodlights2Output::run_diagnostic_test(GoveeFloodDiagnosticTest test_type) {
-  if (test_type == GoveeFloodDiagnosticTest::NONE) {
-    ESP_LOGW(TAG, "No diagnostic test selected");
-    return;
-  }
-
-  this->transition_active_ = false;
-  this->transition_mode_ = GoveeFloodTransitionMode::NONE;
-  this->diagnostic_test_ = test_type;
-  this->diagnostic_step_ = 0;
-  this->diagnostic_phase_start_ms_ = millis();
-  this->diagnostic_last_frame_ms_ = 0;
-  this->diagnostic_set_white_raw_(0, 0);
-
-  switch (test_type) {
-    case GoveeFloodDiagnosticTest::COOL_FADE:
-      ESP_LOGI(TAG, "Starting diagnostic: cool white only fade");
-      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::FADE_UP;
-      break;
-
-    case GoveeFloodDiagnosticTest::WARM_FADE:
-      ESP_LOGI(TAG, "Starting diagnostic: warm white only fade");
-      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::FADE_UP;
-      break;
-
-    case GoveeFloodDiagnosticTest::MIXED_FADE:
-      ESP_LOGI(TAG, "Starting diagnostic: mixed white fade");
-      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::FADE_UP;
-      break;
-
-    case GoveeFloodDiagnosticTest::RATIO_SWEEP:
-      ESP_LOGI(TAG, "Starting diagnostic: white ratio sweep at fixed brightness");
-      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::RATIO_FORWARD;
-      break;
-
-    case GoveeFloodDiagnosticTest::COOL_RED_FADE:
-      ESP_LOGI(TAG, "Starting diagnostic: cool red-channel fade");
-      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::FADE_UP;
-      break;
-
-    case GoveeFloodDiagnosticTest::COOL_GREEN_FADE:
-      ESP_LOGI(TAG, "Starting diagnostic: cool green-channel fade");
-      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::FADE_UP;
-      break;
-
-    case GoveeFloodDiagnosticTest::COOL_BLUE_FADE:
-      ESP_LOGI(TAG, "Starting diagnostic: cool blue-channel fade");
-      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::FADE_UP;
-      break;
-
-    case GoveeFloodDiagnosticTest::COOL_FIXED_RETRANSMIT:
-      ESP_LOGI(
-        TAG,
-        "Starting diagnostic: cool fixed-value retransmit (%u for %u ms)",
-        DIAGNOSTIC_FIXED_VALUE,
-        DIAGNOSTIC_FIXED_DURATION_MS
-      );
-      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::FIXED_RETRANSMIT;
-      break;
-
-    case GoveeFloodDiagnosticTest::NONE:
-    default:
-      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::NONE;
-      break;
-  }
-}
-
 void GoveeOutdoorFloodlights2TransitionNumber::setup() {
   if (this->light_output_ == nullptr) {
     ESP_LOGE(NUMBER_TAG, "No Govee flood light output was configured");
@@ -971,28 +589,6 @@ void GoveeOutdoorFloodlights2TransitionNumber::control(float value) {
 
   this->light_output_->set_transition_ms(transition_ms);
   this->publish_state(transition_ms);
-}
-
-void GoveeOutdoorFloodlights2DiagnosticButton::setup() {
-  if (this->light_output_ == nullptr) {
-    ESP_LOGE(BUTTON_TAG, "No Govee flood light output was configured");
-    this->mark_failed();
-    return;
-  }
-}
-
-void GoveeOutdoorFloodlights2DiagnosticButton::dump_config() {
-  ESP_LOGCONFIG(BUTTON_TAG, "Govee Outdoor Floodlights 2 Diagnostic Button");
-  ESP_LOGCONFIG(BUTTON_TAG, "  Test type: %u", static_cast<uint8_t>(this->test_type_));
-}
-
-void GoveeOutdoorFloodlights2DiagnosticButton::press_action() {
-  if (this->light_output_ == nullptr) {
-    ESP_LOGW(BUTTON_TAG, "No light output configured");
-    return;
-  }
-
-  this->light_output_->run_diagnostic_test(this->test_type_);
 }
 
 }  // namespace govee_outdoor_floodlights_2

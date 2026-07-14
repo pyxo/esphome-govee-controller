@@ -9,7 +9,6 @@
 #include "esphome/components/light/light_traits.h"
 #include "esphome/components/light/light_color_values.h"
 #include "esphome/components/number/number.h"
-#include "esphome/components/button/button.h"
 
 #include "driver/gpio.h"
 #include "driver/rmt_tx.h"
@@ -41,28 +40,6 @@ enum class GoveeFloodTransitionMode {
   WHITE_TO_RGB_FADE_RGB_IN,
 };
 
-enum class GoveeFloodDiagnosticTest {
-  NONE = 0,
-  COOL_FADE = 1,
-  WARM_FADE = 2,
-  MIXED_FADE = 3,
-  RATIO_SWEEP = 4,
-  COOL_RED_FADE = 5,
-  COOL_GREEN_FADE = 6,
-  COOL_BLUE_FADE = 7,
-  COOL_FIXED_RETRANSMIT = 8,
-};
-
-enum class GoveeFloodDiagnosticPhase {
-  NONE,
-  FADE_UP,
-  HOLD,
-  FADE_DOWN,
-  RATIO_FORWARD,
-  RATIO_REVERSE,
-  FIXED_RETRANSMIT,
-};
-
 class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Component {
  public:
   void setup() override;
@@ -88,8 +65,6 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
   uint32_t get_transition_ms() const {
     return this->transition_ms_;
   }
-
-  void run_diagnostic_test(GoveeFloodDiagnosticTest test_type);
 
  protected:
   static constexpr const char *TAG = "govee_outdoor_floodlights_2";
@@ -129,14 +104,6 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
   // 0-5 becomes 0. 6-255 is sent normally.
   static constexpr uint8_t WHITE_LOW_CUTOFF = 6;
 
-  // Diagnostic tests are advanced from loop() so they never block ESPHome's
-  // API, Wi-Fi, or watchdog processing.
-  static constexpr uint32_t DIAGNOSTIC_FADE_INTERVAL_MS = 20;
-  static constexpr uint32_t DIAGNOSTIC_RATIO_INTERVAL_MS = 50;
-  static constexpr uint32_t DIAGNOSTIC_HOLD_MS = 500;
-  static constexpr uint32_t DIAGNOSTIC_FIXED_DURATION_MS = 5000;
-  static constexpr uint8_t DIAGNOSTIC_FIXED_VALUE = 128;
-
   bool transition_active_{false};
   GoveeFloodTransitionMode transition_mode_{GoveeFloodTransitionMode::NONE};
 
@@ -149,12 +116,6 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
   GoveeFloodOutputValues start_values_;
   GoveeFloodOutputValues target_values_;
   GoveeFloodOutputValues pending_values_;
-
-  GoveeFloodDiagnosticTest diagnostic_test_{GoveeFloodDiagnosticTest::NONE};
-  GoveeFloodDiagnosticPhase diagnostic_phase_{GoveeFloodDiagnosticPhase::NONE};
-  uint16_t diagnostic_step_{0};
-  uint32_t diagnostic_phase_start_ms_{0};
-  uint32_t diagnostic_last_frame_ms_{0};
 
   uint8_t to_u8_(float value);
   uint8_t to_white_u8_(float value);
@@ -196,14 +157,6 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
   );
 
   void finish_current_phase_();
-
-  void diagnostic_set_white_raw_(uint8_t cool_white, uint8_t warm_white);
-  void diagnostic_set_cool_channels_raw_(uint8_t red, uint8_t green, uint8_t blue);
-  void diagnostic_set_warm_channels_raw_(uint8_t red, uint8_t green, uint8_t blue);
-  void diagnostic_apply_fade_step_(uint8_t value);
-  void diagnostic_apply_ratio_step_(uint8_t step);
-  void update_diagnostic_();
-  void finish_diagnostic_();
 };
 
 class GoveeOutdoorFloodlights2TransitionNumber : public number::Number, public Component {
@@ -244,26 +197,6 @@ class GoveeOutdoorFloodlights2TransitionNumber : public number::Number, public C
   uint32_t max_value_ms_{5000};
   uint32_t step_ms_{100};
   uint32_t initial_value_ms_{1000};
-};
-
-class GoveeOutdoorFloodlights2DiagnosticButton : public button::Button, public Component {
- public:
-  void setup() override;
-  void dump_config() override;
-
-  void set_light_output(GoveeOutdoorFloodlights2Output *light_output) {
-    this->light_output_ = light_output;
-  }
-
-  void set_test_type(uint8_t test_type) {
-    this->test_type_ = static_cast<GoveeFloodDiagnosticTest>(test_type);
-  }
-
- protected:
-  void press_action() override;
-
-  GoveeOutdoorFloodlights2Output *light_output_{nullptr};
-  GoveeFloodDiagnosticTest test_type_{GoveeFloodDiagnosticTest::NONE};
 };
 
 }  // namespace govee_outdoor_floodlights_2
