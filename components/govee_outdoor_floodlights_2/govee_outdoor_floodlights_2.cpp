@@ -76,11 +76,7 @@ void GoveeOutdoorFloodlights2Output::loop() {
 
   uint32_t frame_interval = RGB_FRAME_INTERVAL_MS;
 
-  if (
-    this->transition_mode_ == GoveeFloodTransitionMode::WHITE ||
-    this->transition_mode_ == GoveeFloodTransitionMode::RGB_TO_WHITE_FADE_WHITE_IN ||
-    this->transition_mode_ == GoveeFloodTransitionMode::WHITE_TO_RGB_FADE_WHITE_OUT
-  ) {
+  if (this->transition_mode_ == GoveeFloodTransitionMode::WHITE) {
     frame_interval = WHITE_FRAME_INTERVAL_MS;
   }
 
@@ -104,11 +100,7 @@ void GoveeOutdoorFloodlights2Output::loop() {
 
   progress = this->ease_(progress);
 
-  if (
-    this->transition_mode_ == GoveeFloodTransitionMode::WHITE ||
-    this->transition_mode_ == GoveeFloodTransitionMode::RGB_TO_WHITE_FADE_WHITE_IN ||
-    this->transition_mode_ == GoveeFloodTransitionMode::WHITE_TO_RGB_FADE_WHITE_OUT
-  ) {
+  if (this->transition_mode_ == GoveeFloodTransitionMode::WHITE) {
     this->current_values_ = this->interpolate_white_values_(
       this->start_values_,
       this->target_values_,
@@ -144,7 +136,6 @@ void GoveeOutdoorFloodlights2Output::dump_config() {
   ESP_LOGCONFIG(TAG, "  Transition time: %u ms", this->transition_ms_);
   ESP_LOGCONFIG(TAG, "  RGB frame interval: %u ms", RGB_FRAME_INTERVAL_MS);
   ESP_LOGCONFIG(TAG, "  White frame interval: %u ms", WHITE_FRAME_INTERVAL_MS);
-  ESP_LOGCONFIG(TAG, "  White low cutoff: %u", WHITE_LOW_CUTOFF);
   ESP_LOGCONFIG(TAG, "  RMT resolution: %u Hz", RMT_RESOLUTION_HZ);
   ESP_LOGCONFIG(TAG, "  RMT mem block symbols: %u", RMT_MEM_BLOCK_SYMBOLS);
 }
@@ -173,16 +164,6 @@ uint8_t GoveeOutdoorFloodlights2Output::to_u8_(float value) {
   }
 
   return static_cast<uint8_t>(value * 255.0f + 0.5f);
-}
-
-uint8_t GoveeOutdoorFloodlights2Output::to_white_u8_(float value) {
-  uint8_t out = this->to_u8_(value);
-
-  if (out > 0 && out < WHITE_LOW_CUTOFF) {
-    return 0;
-  }
-
-  return out;
 }
 
 float GoveeOutdoorFloodlights2Output::clamp_(float value, float min_value, float max_value) {
@@ -260,11 +241,6 @@ void GoveeOutdoorFloodlights2Output::show_() {
 
   // Extra latch/reset gap for the Govee pixels.
   delayMicroseconds(300);
-}
-
-GoveeFloodOutputValues GoveeOutdoorFloodlights2Output::zero_values_() {
-  GoveeFloodOutputValues values;
-  return values;
 }
 
 float GoveeOutdoorFloodlights2Output::total_rgb_(const GoveeFloodOutputValues &values) {
@@ -407,8 +383,8 @@ void GoveeOutdoorFloodlights2Output::apply_values_(const GoveeFloodOutputValues 
   const uint8_t rgb_red = this->to_u8_(values.red);
   const uint8_t rgb_green = this->to_u8_(values.green);
   const uint8_t rgb_blue = this->to_u8_(values.blue);
-  const uint8_t cool_white = this->to_white_u8_(values.cool_white);
-  const uint8_t warm_white = this->to_white_u8_(values.warm_white);
+  const uint8_t cool_white = this->to_u8_(values.cool_white);
+  const uint8_t warm_white = this->to_u8_(values.warm_white);
 
   this->clear_();
 
@@ -450,28 +426,6 @@ void GoveeOutdoorFloodlights2Output::begin_phase_(
 }
 
 void GoveeOutdoorFloodlights2Output::finish_current_phase_() {
-  const auto finished_mode = this->transition_mode_;
-
-  if (finished_mode == GoveeFloodTransitionMode::RGB_TO_WHITE_FADE_RGB_OUT) {
-    this->begin_phase_(
-      GoveeFloodTransitionMode::RGB_TO_WHITE_FADE_WHITE_IN,
-      this->zero_values_(),
-      this->pending_values_,
-      this->next_phase_duration_ms_
-    );
-    return;
-  }
-
-  if (finished_mode == GoveeFloodTransitionMode::WHITE_TO_RGB_FADE_WHITE_OUT) {
-    this->begin_phase_(
-      GoveeFloodTransitionMode::WHITE_TO_RGB_FADE_RGB_IN,
-      this->zero_values_(),
-      this->pending_values_,
-      this->next_phase_duration_ms_
-    );
-    return;
-  }
-
   this->transition_active_ = false;
   this->transition_mode_ = GoveeFloodTransitionMode::NONE;
 }
@@ -490,36 +444,7 @@ void GoveeOutdoorFloodlights2Output::write_state(light::LightState *state) {
   const auto current_mode = this->output_mode_(this->current_values_);
   const auto target_mode = this->output_mode_(this->pending_values_);
 
-  const uint32_t first_phase_duration = this->transition_ms_ / 2;
-  uint32_t second_phase_duration = this->transition_ms_ - first_phase_duration;
-
-  if (second_phase_duration < 1) {
-    second_phase_duration = 1;
-  }
-
-  this->next_phase_duration_ms_ = second_phase_duration;
-
-  if (current_mode == GoveeFloodOutputMode::RGB && target_mode == GoveeFloodOutputMode::WHITE) {
-    this->begin_phase_(
-      GoveeFloodTransitionMode::RGB_TO_WHITE_FADE_RGB_OUT,
-      this->current_values_,
-      this->zero_values_(),
-      first_phase_duration
-    );
-    return;
-  }
-
-  if (current_mode == GoveeFloodOutputMode::WHITE && target_mode == GoveeFloodOutputMode::RGB) {
-    this->begin_phase_(
-      GoveeFloodTransitionMode::WHITE_TO_RGB_FADE_WHITE_OUT,
-      this->current_values_,
-      this->zero_values_(),
-      first_phase_duration
-    );
-    return;
-  }
-
-  if (current_mode == GoveeFloodOutputMode::WHITE || target_mode == GoveeFloodOutputMode::WHITE) {
+  if (current_mode == GoveeFloodOutputMode::WHITE && target_mode == GoveeFloodOutputMode::WHITE) {
     this->begin_phase_(
       GoveeFloodTransitionMode::WHITE,
       this->current_values_,
@@ -529,6 +454,9 @@ void GoveeOutdoorFloodlights2Output::write_state(light::LightState *state) {
     return;
   }
 
+  // Crossfade all five logical channels together. This allows the RGB and
+  // white emitters to overlap during RGB <-> white transitions instead of
+  // fading through black first.
   this->begin_phase_(
     GoveeFloodTransitionMode::RGB,
     this->current_values_,

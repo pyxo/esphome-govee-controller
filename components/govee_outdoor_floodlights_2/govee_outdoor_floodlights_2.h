@@ -34,10 +34,6 @@ enum class GoveeFloodTransitionMode {
   NONE,
   RGB,
   WHITE,
-  RGB_TO_WHITE_FADE_RGB_OUT,
-  RGB_TO_WHITE_FADE_WHITE_IN,
-  WHITE_TO_RGB_FADE_WHITE_OUT,
-  WHITE_TO_RGB_FADE_RGB_IN,
 };
 
 class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Component {
@@ -100,16 +96,11 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
   static constexpr uint32_t RGB_FRAME_INTERVAL_MS = 20;
   static constexpr uint32_t WHITE_FRAME_INTERVAL_MS = 20;
 
-  // Very low white values seem unstable on these flood lights.
-  // 0-5 becomes 0. 6-255 is sent normally.
-  static constexpr uint8_t WHITE_LOW_CUTOFF = 6;
-
   bool transition_active_{false};
   GoveeFloodTransitionMode transition_mode_{GoveeFloodTransitionMode::NONE};
 
   uint32_t transition_start_ms_{0};
   uint32_t phase_duration_ms_{0};
-  uint32_t next_phase_duration_ms_{0};
   uint32_t last_frame_ms_{0};
 
   GoveeFloodOutputValues current_values_;
@@ -118,7 +109,6 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
   GoveeFloodOutputValues pending_values_;
 
   uint8_t to_u8_(float value);
-  uint8_t to_white_u8_(float value);
 
   float clamp_(float value, float min_value, float max_value);
   float ease_(float progress);
@@ -129,7 +119,6 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
   void set_pixel_rgb_(uint16_t pixel, uint8_t red, uint8_t green, uint8_t blue);
   void apply_values_(const GoveeFloodOutputValues &values);
 
-  GoveeFloodOutputValues zero_values_();
   GoveeFloodOutputValues values_from_light_state_(light::LightState *state);
 
   GoveeFloodOutputMode output_mode_(const GoveeFloodOutputValues &values);
