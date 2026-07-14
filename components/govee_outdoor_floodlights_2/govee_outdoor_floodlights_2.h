@@ -9,6 +9,7 @@
 #include "esphome/components/light/light_traits.h"
 #include "esphome/components/light/light_color_values.h"
 #include "esphome/components/number/number.h"
+#include "esphome/components/button/button.h"
 
 #include "driver/gpio.h"
 #include "driver/rmt_tx.h"
@@ -40,6 +41,14 @@ enum class GoveeFloodTransitionMode {
   WHITE_TO_RGB_FADE_RGB_IN,
 };
 
+enum class GoveeFloodDiagnosticTest {
+  NONE = 0,
+  COOL_FADE = 1,
+  WARM_FADE = 2,
+  MIXED_FADE = 3,
+  RATIO_SWEEP = 4,
+};
+
 class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Component {
  public:
   void setup() override;
@@ -65,6 +74,8 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
   uint32_t get_transition_ms() const {
     return this->transition_ms_;
   }
+
+  void run_diagnostic_test(GoveeFloodDiagnosticTest test_type);
 
  protected:
   static constexpr const char *TAG = "govee_outdoor_floodlights_2";
@@ -157,6 +168,13 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
   );
 
   void finish_current_phase_();
+
+  void diagnostic_set_white_raw_(uint8_t cool_white, uint8_t warm_white);
+  void diagnostic_delay_(uint32_t delay_ms);
+  void diagnostic_cool_white_fade_();
+  void diagnostic_warm_white_fade_();
+  void diagnostic_mixed_white_fade_();
+  void diagnostic_ratio_sweep_();
 };
 
 class GoveeOutdoorFloodlights2TransitionNumber : public number::Number, public Component {
@@ -197,6 +215,26 @@ class GoveeOutdoorFloodlights2TransitionNumber : public number::Number, public C
   uint32_t max_value_ms_{5000};
   uint32_t step_ms_{100};
   uint32_t initial_value_ms_{1000};
+};
+
+class GoveeOutdoorFloodlights2DiagnosticButton : public button::Button, public Component {
+ public:
+  void setup() override;
+  void dump_config() override;
+
+  void set_light_output(GoveeOutdoorFloodlights2Output *light_output) {
+    this->light_output_ = light_output;
+  }
+
+  void set_test_type(uint8_t test_type) {
+    this->test_type_ = static_cast<GoveeFloodDiagnosticTest>(test_type);
+  }
+
+ protected:
+  void press_action() override;
+
+  GoveeOutdoorFloodlights2Output *light_output_{nullptr};
+  GoveeFloodDiagnosticTest test_type_{GoveeFloodDiagnosticTest::NONE};
 };
 
 }  // namespace govee_outdoor_floodlights_2
