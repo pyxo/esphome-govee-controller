@@ -69,6 +69,11 @@ void GoveeOutdoorFloodlights2Output::setup() {
 }
 
 void GoveeOutdoorFloodlights2Output::loop() {
+  if (this->diagnostic_phase_ != GoveeFloodDiagnosticPhase::NONE) {
+    this->update_diagnostic_();
+    return;
+  }
+
   if (!this->transition_active_) {
     return;
   }
@@ -475,6 +480,12 @@ void GoveeOutdoorFloodlights2Output::finish_current_phase_() {
 }
 
 void GoveeOutdoorFloodlights2Output::write_state(light::LightState *state) {
+  if (this->diagnostic_phase_ != GoveeFloodDiagnosticPhase::NONE) {
+    ESP_LOGI(TAG, "Diagnostic cancelled by light command");
+    this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::NONE;
+    this->diagnostic_test_ = GoveeFloodDiagnosticTest::NONE;
+  }
+
   this->pending_values_ = this->values_from_light_state_(state);
 
   if (this->transition_ms_ == 0) {
@@ -539,6 +550,10 @@ void GoveeOutdoorFloodlights2Output::diagnostic_set_white_raw_(uint8_t cool_whit
   this->transition_active_ = false;
   this->transition_mode_ = GoveeFloodTransitionMode::NONE;
 
+  this->current_values_ = this->zero_values_();
+  this->current_values_.cool_white = static_cast<float>(cool_white) / 255.0f;
+  this->current_values_.warm_white = static_cast<float>(warm_white) / 255.0f;
+
   this->clear_();
 
   for (uint16_t i = 0; i < this->flood_count_; i++) {
@@ -556,166 +571,219 @@ void GoveeOutdoorFloodlights2Output::diagnostic_set_white_raw_(uint8_t cool_whit
   this->show_();
 }
 
-void GoveeOutdoorFloodlights2Output::diagnostic_delay_(uint32_t delay_ms) {
-  delay(delay_ms);
-}
-
-void GoveeOutdoorFloodlights2Output::diagnostic_cool_white_fade_() {
-  ESP_LOGI(TAG, "Starting diagnostic: cool white only fade");
-
-  for (uint16_t value = 0; value <= 255; value++) {
-    if (value % 25 == 0) {
-      ESP_LOGI(TAG, "Cool white fade value: %u", value);
-    }
-
-    this->diagnostic_set_white_raw_(value, 0);
-    this->diagnostic_delay_(20);
-  }
-
-  this->diagnostic_delay_(500);
-
-  for (int16_t value = 255; value >= 0; value--) {
-    if (value % 25 == 0) {
-      ESP_LOGI(TAG, "Cool white fade value: %d", value);
-    }
-
-    this->diagnostic_set_white_raw_(static_cast<uint8_t>(value), 0);
-    this->diagnostic_delay_(20);
-  }
-
-  this->diagnostic_set_white_raw_(0, 0);
-  ESP_LOGI(TAG, "Finished diagnostic: cool white only fade");
-}
-
-void GoveeOutdoorFloodlights2Output::diagnostic_warm_white_fade_() {
-  ESP_LOGI(TAG, "Starting diagnostic: warm white only fade");
-
-  for (uint16_t value = 0; value <= 255; value++) {
-    if (value % 25 == 0) {
-      ESP_LOGI(TAG, "Warm white fade value: %u", value);
-    }
-
-    this->diagnostic_set_white_raw_(0, value);
-    this->diagnostic_delay_(20);
-  }
-
-  this->diagnostic_delay_(500);
-
-  for (int16_t value = 255; value >= 0; value--) {
-    if (value % 25 == 0) {
-      ESP_LOGI(TAG, "Warm white fade value: %d", value);
-    }
-
-    this->diagnostic_set_white_raw_(0, static_cast<uint8_t>(value));
-    this->diagnostic_delay_(20);
-  }
-
-  this->diagnostic_set_white_raw_(0, 0);
-  ESP_LOGI(TAG, "Finished diagnostic: warm white only fade");
-}
-
-void GoveeOutdoorFloodlights2Output::diagnostic_mixed_white_fade_() {
-  ESP_LOGI(TAG, "Starting diagnostic: mixed white fade");
-
-  // Approximate the color temp from your log: 188.5 mireds.
-  // Using the widened component range of 153-371 mireds:
-  // warm_ratio = (188.5 - 153) / (371 - 153) = ~0.163
-  // cool_ratio = ~0.837
-  static constexpr float COOL_RATIO = 0.837f;
-  static constexpr float WARM_RATIO = 0.163f;
-
-  for (uint16_t value = 0; value <= 255; value++) {
-    const uint8_t cool = static_cast<uint8_t>((value * COOL_RATIO) + 0.5f);
-    const uint8_t warm = static_cast<uint8_t>((value * WARM_RATIO) + 0.5f);
-
-    if (value % 25 == 0) {
-      ESP_LOGI(TAG, "Mixed white fade value: total=%u cool=%u warm=%u", value, cool, warm);
-    }
-
-    this->diagnostic_set_white_raw_(cool, warm);
-    this->diagnostic_delay_(20);
-  }
-
-  this->diagnostic_delay_(500);
-
-  for (int16_t value = 255; value >= 0; value--) {
-    const uint8_t cool = static_cast<uint8_t>((value * COOL_RATIO) + 0.5f);
-    const uint8_t warm = static_cast<uint8_t>((value * WARM_RATIO) + 0.5f);
-
-    if (value % 25 == 0) {
-      ESP_LOGI(TAG, "Mixed white fade value: total=%d cool=%u warm=%u", value, cool, warm);
-    }
-
-    this->diagnostic_set_white_raw_(cool, warm);
-    this->diagnostic_delay_(20);
-  }
-
-  this->diagnostic_set_white_raw_(0, 0);
-  ESP_LOGI(TAG, "Finished diagnostic: mixed white fade");
-}
-
-void GoveeOutdoorFloodlights2Output::diagnostic_ratio_sweep_() {
-  ESP_LOGI(TAG, "Starting diagnostic: white ratio sweep at fixed brightness");
-
-  static constexpr uint8_t TOTAL = 160;
-
-  for (uint16_t step = 0; step <= 100; step++) {
-    const float warm_ratio = static_cast<float>(step) / 100.0f;
-    const float cool_ratio = 1.0f - warm_ratio;
-
-    const uint8_t cool = static_cast<uint8_t>((TOTAL * cool_ratio) + 0.5f);
-    const uint8_t warm = static_cast<uint8_t>((TOTAL * warm_ratio) + 0.5f);
-
-    if (step % 10 == 0) {
-      ESP_LOGI(TAG, "Ratio sweep: step=%u cool=%u warm=%u", step, cool, warm);
-    }
-
-    this->diagnostic_set_white_raw_(cool, warm);
-    this->diagnostic_delay_(50);
-  }
-
-  this->diagnostic_delay_(500);
-
-  for (int16_t step = 100; step >= 0; step--) {
-    const float warm_ratio = static_cast<float>(step) / 100.0f;
-    const float cool_ratio = 1.0f - warm_ratio;
-
-    const uint8_t cool = static_cast<uint8_t>((TOTAL * cool_ratio) + 0.5f);
-    const uint8_t warm = static_cast<uint8_t>((TOTAL * warm_ratio) + 0.5f);
-
-    if (step % 10 == 0) {
-      ESP_LOGI(TAG, "Ratio sweep: step=%d cool=%u warm=%u", step, cool, warm);
-    }
-
-    this->diagnostic_set_white_raw_(cool, warm);
-    this->diagnostic_delay_(50);
-  }
-
-  this->diagnostic_set_white_raw_(0, 0);
-  ESP_LOGI(TAG, "Finished diagnostic: white ratio sweep at fixed brightness");
-}
-
-void GoveeOutdoorFloodlights2Output::run_diagnostic_test(GoveeFloodDiagnosticTest test_type) {
-  switch (test_type) {
+void GoveeOutdoorFloodlights2Output::diagnostic_apply_fade_step_(uint8_t value) {
+  switch (this->diagnostic_test_) {
     case GoveeFloodDiagnosticTest::COOL_FADE:
-      this->diagnostic_cool_white_fade_();
+      this->diagnostic_set_white_raw_(value, 0);
+      if (value % 25 == 0) {
+        ESP_LOGI(TAG, "Cool white fade value: %u", value);
+      }
       break;
 
     case GoveeFloodDiagnosticTest::WARM_FADE:
-      this->diagnostic_warm_white_fade_();
+      this->diagnostic_set_white_raw_(0, value);
+      if (value % 25 == 0) {
+        ESP_LOGI(TAG, "Warm white fade value: %u", value);
+      }
+      break;
+
+    case GoveeFloodDiagnosticTest::MIXED_FADE: {
+      // Approximate 188.5 mireds using the 153-371 mired range.
+      static constexpr float COOL_RATIO = 0.837f;
+      static constexpr float WARM_RATIO = 0.163f;
+
+      const uint8_t cool = static_cast<uint8_t>((value * COOL_RATIO) + 0.5f);
+      const uint8_t warm = static_cast<uint8_t>((value * WARM_RATIO) + 0.5f);
+
+      this->diagnostic_set_white_raw_(cool, warm);
+      if (value % 25 == 0) {
+        ESP_LOGI(TAG, "Mixed white fade value: total=%u cool=%u warm=%u", value, cool, warm);
+      }
+      break;
+    }
+
+    case GoveeFloodDiagnosticTest::NONE:
+    case GoveeFloodDiagnosticTest::RATIO_SWEEP:
+    default:
+      break;
+  }
+}
+
+void GoveeOutdoorFloodlights2Output::diagnostic_apply_ratio_step_(uint8_t step) {
+  static constexpr uint8_t TOTAL = 160;
+
+  if (step > 100) {
+    step = 100;
+  }
+
+  const float warm_ratio = static_cast<float>(step) / 100.0f;
+  const float cool_ratio = 1.0f - warm_ratio;
+
+  const uint8_t cool = static_cast<uint8_t>((TOTAL * cool_ratio) + 0.5f);
+  const uint8_t warm = static_cast<uint8_t>((TOTAL * warm_ratio) + 0.5f);
+
+  this->diagnostic_set_white_raw_(cool, warm);
+  if (step % 10 == 0) {
+    ESP_LOGI(TAG, "Ratio sweep: step=%u cool=%u warm=%u", step, cool, warm);
+  }
+}
+
+void GoveeOutdoorFloodlights2Output::update_diagnostic_() {
+  const uint32_t now = millis();
+
+  if (this->diagnostic_phase_ == GoveeFloodDiagnosticPhase::HOLD) {
+    if (now - this->diagnostic_phase_start_ms_ < DIAGNOSTIC_HOLD_MS) {
+      return;
+    }
+
+    if (this->diagnostic_test_ == GoveeFloodDiagnosticTest::RATIO_SWEEP) {
+      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::RATIO_REVERSE;
+      this->diagnostic_step_ = 100;
+    } else {
+      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::FADE_DOWN;
+      this->diagnostic_step_ = 255;
+    }
+
+    this->diagnostic_last_frame_ms_ = 0;
+    return;
+  }
+
+  uint32_t frame_interval = DIAGNOSTIC_FADE_INTERVAL_MS;
+  if (
+    this->diagnostic_phase_ == GoveeFloodDiagnosticPhase::RATIO_FORWARD ||
+    this->diagnostic_phase_ == GoveeFloodDiagnosticPhase::RATIO_REVERSE
+  ) {
+    frame_interval = DIAGNOSTIC_RATIO_INTERVAL_MS;
+  }
+
+  if (
+    this->diagnostic_last_frame_ms_ != 0 &&
+    now - this->diagnostic_last_frame_ms_ < frame_interval
+  ) {
+    return;
+  }
+
+  this->diagnostic_last_frame_ms_ = now;
+
+  switch (this->diagnostic_phase_) {
+    case GoveeFloodDiagnosticPhase::FADE_UP:
+      this->diagnostic_apply_fade_step_(static_cast<uint8_t>(this->diagnostic_step_));
+
+      if (this->diagnostic_step_ >= 255) {
+        this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::HOLD;
+        this->diagnostic_phase_start_ms_ = now;
+      } else {
+        this->diagnostic_step_++;
+      }
+      break;
+
+    case GoveeFloodDiagnosticPhase::FADE_DOWN:
+      this->diagnostic_apply_fade_step_(static_cast<uint8_t>(this->diagnostic_step_));
+
+      if (this->diagnostic_step_ == 0) {
+        this->finish_diagnostic_();
+      } else {
+        this->diagnostic_step_--;
+      }
+      break;
+
+    case GoveeFloodDiagnosticPhase::RATIO_FORWARD:
+      this->diagnostic_apply_ratio_step_(static_cast<uint8_t>(this->diagnostic_step_));
+
+      if (this->diagnostic_step_ >= 100) {
+        this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::HOLD;
+        this->diagnostic_phase_start_ms_ = now;
+      } else {
+        this->diagnostic_step_++;
+      }
+      break;
+
+    case GoveeFloodDiagnosticPhase::RATIO_REVERSE:
+      this->diagnostic_apply_ratio_step_(static_cast<uint8_t>(this->diagnostic_step_));
+
+      if (this->diagnostic_step_ == 0) {
+        this->finish_diagnostic_();
+      } else {
+        this->diagnostic_step_--;
+      }
+      break;
+
+    case GoveeFloodDiagnosticPhase::NONE:
+    case GoveeFloodDiagnosticPhase::HOLD:
+    default:
+      break;
+  }
+}
+
+void GoveeOutdoorFloodlights2Output::finish_diagnostic_() {
+  const auto finished_test = this->diagnostic_test_;
+
+  this->diagnostic_set_white_raw_(0, 0);
+  this->diagnostic_test_ = GoveeFloodDiagnosticTest::NONE;
+  this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::NONE;
+  this->diagnostic_step_ = 0;
+
+  switch (finished_test) {
+    case GoveeFloodDiagnosticTest::COOL_FADE:
+      ESP_LOGI(TAG, "Finished diagnostic: cool white only fade");
+      break;
+
+    case GoveeFloodDiagnosticTest::WARM_FADE:
+      ESP_LOGI(TAG, "Finished diagnostic: warm white only fade");
       break;
 
     case GoveeFloodDiagnosticTest::MIXED_FADE:
-      this->diagnostic_mixed_white_fade_();
+      ESP_LOGI(TAG, "Finished diagnostic: mixed white fade");
       break;
 
     case GoveeFloodDiagnosticTest::RATIO_SWEEP:
-      this->diagnostic_ratio_sweep_();
+      ESP_LOGI(TAG, "Finished diagnostic: white ratio sweep at fixed brightness");
       break;
 
     case GoveeFloodDiagnosticTest::NONE:
     default:
-      ESP_LOGW(TAG, "No diagnostic test selected");
+      break;
+  }
+}
+
+void GoveeOutdoorFloodlights2Output::run_diagnostic_test(GoveeFloodDiagnosticTest test_type) {
+  if (test_type == GoveeFloodDiagnosticTest::NONE) {
+    ESP_LOGW(TAG, "No diagnostic test selected");
+    return;
+  }
+
+  this->transition_active_ = false;
+  this->transition_mode_ = GoveeFloodTransitionMode::NONE;
+  this->diagnostic_test_ = test_type;
+  this->diagnostic_step_ = 0;
+  this->diagnostic_phase_start_ms_ = millis();
+  this->diagnostic_last_frame_ms_ = 0;
+  this->diagnostic_set_white_raw_(0, 0);
+
+  switch (test_type) {
+    case GoveeFloodDiagnosticTest::COOL_FADE:
+      ESP_LOGI(TAG, "Starting diagnostic: cool white only fade");
+      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::FADE_UP;
+      break;
+
+    case GoveeFloodDiagnosticTest::WARM_FADE:
+      ESP_LOGI(TAG, "Starting diagnostic: warm white only fade");
+      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::FADE_UP;
+      break;
+
+    case GoveeFloodDiagnosticTest::MIXED_FADE:
+      ESP_LOGI(TAG, "Starting diagnostic: mixed white fade");
+      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::FADE_UP;
+      break;
+
+    case GoveeFloodDiagnosticTest::RATIO_SWEEP:
+      ESP_LOGI(TAG, "Starting diagnostic: white ratio sweep at fixed brightness");
+      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::RATIO_FORWARD;
+      break;
+
+    case GoveeFloodDiagnosticTest::NONE:
+    default:
+      this->diagnostic_phase_ = GoveeFloodDiagnosticPhase::NONE;
       break;
   }
 }

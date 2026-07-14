@@ -49,6 +49,15 @@ enum class GoveeFloodDiagnosticTest {
   RATIO_SWEEP = 4,
 };
 
+enum class GoveeFloodDiagnosticPhase {
+  NONE,
+  FADE_UP,
+  HOLD,
+  FADE_DOWN,
+  RATIO_FORWARD,
+  RATIO_REVERSE,
+};
+
 class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Component {
  public:
   void setup() override;
@@ -115,6 +124,12 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
   // 0-5 becomes 0. 6-255 is sent normally.
   static constexpr uint8_t WHITE_LOW_CUTOFF = 6;
 
+  // Diagnostic tests are advanced from loop() so they never block ESPHome's
+  // API, Wi-Fi, or watchdog processing.
+  static constexpr uint32_t DIAGNOSTIC_FADE_INTERVAL_MS = 20;
+  static constexpr uint32_t DIAGNOSTIC_RATIO_INTERVAL_MS = 50;
+  static constexpr uint32_t DIAGNOSTIC_HOLD_MS = 500;
+
   bool transition_active_{false};
   GoveeFloodTransitionMode transition_mode_{GoveeFloodTransitionMode::NONE};
 
@@ -127,6 +142,12 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
   GoveeFloodOutputValues start_values_;
   GoveeFloodOutputValues target_values_;
   GoveeFloodOutputValues pending_values_;
+
+  GoveeFloodDiagnosticTest diagnostic_test_{GoveeFloodDiagnosticTest::NONE};
+  GoveeFloodDiagnosticPhase diagnostic_phase_{GoveeFloodDiagnosticPhase::NONE};
+  uint16_t diagnostic_step_{0};
+  uint32_t diagnostic_phase_start_ms_{0};
+  uint32_t diagnostic_last_frame_ms_{0};
 
   uint8_t to_u8_(float value);
   uint8_t to_white_u8_(float value);
@@ -170,11 +191,10 @@ class GoveeOutdoorFloodlights2Output : public light::LightOutput, public Compone
   void finish_current_phase_();
 
   void diagnostic_set_white_raw_(uint8_t cool_white, uint8_t warm_white);
-  void diagnostic_delay_(uint32_t delay_ms);
-  void diagnostic_cool_white_fade_();
-  void diagnostic_warm_white_fade_();
-  void diagnostic_mixed_white_fade_();
-  void diagnostic_ratio_sweep_();
+  void diagnostic_apply_fade_step_(uint8_t value);
+  void diagnostic_apply_ratio_step_(uint8_t step);
+  void update_diagnostic_();
+  void finish_diagnostic_();
 };
 
 class GoveeOutdoorFloodlights2TransitionNumber : public number::Number, public Component {
